@@ -67,6 +67,16 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(tasks[2]['stage'], '交付阶段')
         self.assertEqual(tasks[2]['end'], '')
 
+    def test_full_database_backup_requires_admin(self):
+        with self.client.open(self.base+'/api/admin/database-backup') as response:
+            self.assertEqual(response.read(16), b'SQLite format 3\x00')
+        code,_=self.request('/api/register','POST',{'username':'backup.member','displayName':'备份权限成员',
+                                                  'password':'backup-member-password-2026'})
+        self.assertEqual(code,201)
+        _,login=self.request('/api/login','POST',{'username':'backup.member','password':'backup-member-password-2026'})
+        self.csrf=login['csrf']
+        self.assertEqual(self.request('/api/admin/database-backup')[0],403)
+
     def test_crud_conflict_restore_and_isolation(self):
         project, tasks = self.create()
         other, _ = self.create()

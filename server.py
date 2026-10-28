@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 from work_calendar import DEFAULT_CALENDARS, calendar_from_text, calculate_workload, enrich_task, project_metrics
 from work_import import ImportProblem, MAX_FILE, parse_document, read_link
+from cloud_store import CloudDatabaseError
 
 ROOT = Path(__file__).resolve().parent
 STATUSES = ['待确认', '未开始', '进行中', '待验收', '受阻', '已延期', '暂停', '已完成']
@@ -175,6 +176,8 @@ def validate_project(value):
 
 
 class Store:
+    backend = 'sqlite'
+
     def __init__(self, directory):
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -183,13 +186,14 @@ class Store:
         self.backup_dir.mkdir(exist_ok=True, mode=0o700)
         self.backup_lock = threading.Lock()
         # Preserve a complete pre-migration database before changing legacy authentication.
-        if self.path.exists() and self.path.stat().st_size:
+        if self.backend == 'sqlite' and self.path.exists() and self.path.stat().st_size:
             with self.connect() as existing:
                 needs_migration = not existing.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
             if needs_migration:
                 self.backup()
         with self.connect() as db:
-            db.execute('PRAGMA journal_mode=WAL')
+            if self.backend == 'sqlite':
+                db.execute('PRAGMA journal_mode=WAL')
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, data TEXT NOT NULL,
@@ -255,7 +259,8 @@ class Store:
                 db.execute("UPDATE projects SET owner_id='admin' WHERE owner_id IS NULL")
             db.execute("DELETE FROM meta WHERE key='password'")
             db.execute("INSERT OR REPLACE INTO meta VALUES('auth_schema', '2')")
-        self.path.chmod(0o600)
+        if self.backend == 'sqlite':
+            self.path.chmod(0o600)
         self.backup()
 
     def connect(self):
@@ -320,6 +325,31 @@ class Store:
             summary = project_metrics(tasks)
             return {'format': 'project-board-v1', 'exportedAt': now(), 'project': project, 'tasks': tasks,
                     'summary': summary, 'workCalendar': {'region': 'CN', 'hoursPerDay': 8, 'inclusive': True, 'years': calendars}}
+
+
+class TursoStore(Store):
+    backend = 'turso'
+
+    def __init__(self, directory):
+        from cloud_store import Factory
+        self.factory = Factory()
+        super().__init__(directory)
+
+    def connect(self):
+        return self.factory.connect()
+
+    def backup(self):
+        from cloud_store import backup
+        return backup(self, now())
+
+
+def make_store(directory):
+    mode = os.environ.get('BOARD_DATABASE_MODE', 'sqlite')
+    if mode == 'turso':
+        return TursoStore(directory)
+    if mode != 'sqlite':
+        raise RuntimeError('BOARD_DATABASE_MODE 必须为 sqlite 或 turso')
+    return Store(directory)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -395,6 +425,8 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(exc.status, {'error': exc.message, **exc.extra})
         except ImportProblem as exc:
             self.respond(400, {'error': str(exc)})
+        except CloudDatabaseError as exc:
+            self.respond(503, {'error': str(exc)})
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as exc:
@@ -426,6 +458,12 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError(403, '登录校验已失效，请刷新页面后重试')
         if path == '/api/session' and method == 'GET':
             return self.respond(200, {'csrf': session['csrf'], 'user': public_user(session)})
+        if path == '/api/admin/database-backup' and method == 'GET':
+            if session['role'] != 'admin':
+                raise APIError(403, '只有管理员可以导出全库备份')
+            file = self.store.backup()
+            return self.respond(200, file.read_bytes(), {'Content-Disposition': 'attachment; filename="workspace-database.sqlite3"'},
+                                content_type='application/vnd.sqlite3')
         if path == '/api/change-password' and method == 'POST':
             return self.change_password(session, self.body())
         if path == '/api/calendar' and method == 'GET':
@@ -831,7 +869,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def make_server(directory, host='127.0.0.1', port=8765):
     server = ThreadingHTTPServer((host, port), Handler)
-    server.store = Store(directory)
+    server.store = make_store(directory)
     server.daemon_threads = False
     return server
 
@@ -844,12 +882,13 @@ def main():
     parser.add_argument('--data-dir', default=os.environ.get('BOARD_DATA_DIR', str(ROOT / 'data')))
     args = parser.parse_args()
     if args.command != 'serve':
-        store = Store(args.data_dir)
+        store = make_store(args.data_dir)
         if args.command == 'backup':
             print('备份成功：' + str(store.backup()))
         else:
             with store.connect() as db:
-                print('数据库完整性：' + db.execute('PRAGMA integrity_check').fetchone()[0])
+                print('数据库连接：正常' if store.backend == 'turso' and db.execute('SELECT 1').fetchone()[0] == 1
+                      else '数据库完整性：' + db.execute('PRAGMA integrity_check').fetchone()[0])
         return
     server = make_server(args.data_dir, args.host, args.port)
     stop = threading.Event()

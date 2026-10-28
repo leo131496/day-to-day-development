@@ -1,8 +1,8 @@
 # 序 · 项目工作台
 
-轻量的多项目管理应用：从项目内容生成工作清单，统一维护责任分工、排期工时、进度、风险及交付验收。内置海康 × 致趣项目原有的 50 项计划；Python 标准库 + SQLite，无须安装第三方运行依赖。
+轻量的多项目管理应用：从项目内容生成工作清单，统一维护责任分工、排期工时、进度、风险及交付验收。内置海康 × 致趣项目原有的 50 项计划；本机使用 Python 标准库 + SQLite，无须安装第三方运行依赖；免费云部署使用校验过的官方 Turso 驱动。
 
-公开访问入口：[序 · 项目工作台](https://leo131496.github.io/day-to-day-development/)。云端应用发布前，入口会显示“待发布”，不提供虚假的登录或保存操作。使用 [Render 发布配置](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2Fleo131496%2Fday-to-day-development) 创建常驻服务及持久磁盘，完成数据迁移和检查后连接正式网址；需要你登录云平台授权并确认费用。完整步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+公开访问入口：[序 · 项目工作台](https://leo131496.github.io/day-to-day-development/)。默认免费方案为 **GitHub Pages + Render Free + Turso Free 云数据库**，不购买实例、磁盘或付费数据库；需要分别登录免费账号授权配置。云端发布前显示“待发布”，完成真实发布、数据迁移和检查后连接正式网址。免费服务有休眠和配额限制。步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 
 ## 已实现
 
@@ -14,7 +14,7 @@
 - **四个关联视图**：项目工作清单、可视化看板、状态看板、进度与工时。新增、修改和删除工作项后同步计算。
 - **自动可视化看板**：交付时间线、任务总数 / 已完成数、状态分布、阶段环形图、负责人堆叠柱状图、排期甘特图、负责人执行进度和交付风险；点击图表联动筛选，点击工作项可直接编辑。支持手机浏览。
 - **工作日工时**：起止日期均计入，每个有效工作日 8H；扣除中国大陆放假和周末，计入调休补班。内置 2025、2026 年国务院通知安排，支持按账号维护年度日历及跨年计算；缺少日期或年度日历时明确提示，不猜算。
-- **持久保存**：SQLite 数据库事务、WAL、FULL 同步；只有事务提交成功才显示保存成功。服务重启不覆盖已有数据，种子计划仅初始化一次。
+- **持久保存**：本机 SQLite 使用事务、WAL、FULL 同步；免费云版直接提交 Turso 云数据库事务，不写临时本机数据库。只有提交成功才显示保存成功，连接失败保留草稿。重启不覆盖记录，种子计划仅初始化一次。
 - **防误操作**：项目和任务删除均可恢复；任务每次修改、导入、归档和恢复均保留历史版本；并发编辑使用版本检查，不静默覆盖。
 - **草稿保护**：填写时保留当前浏览器草稿；关闭、刷新或断网后可恢复，必须点击保存才提交服务器。草稿保存失败会提示。
 - **备份和迁移**：启动、每小时、批量导入前及正常关闭时完整备份数据库，备份通过完整性检查后落盘；页面可手动备份、导出 JSON 和 CSV，支持导入旧版 HTML / JSON 填写记录。
@@ -154,7 +154,7 @@ python3 -B server.py backup
 python3 -B server.py check
 ```
 
-备份不自动清理。请定期将 `data/backups/` 复制到另一台机器或有版本历史的存储中，并监控磁盘空间；同一硬盘上的备份无法抵御整块硬盘损坏。页面也可导出项目 JSON 备份。
+本机 SQLite 模式的备份不自动清理；免费云模式在数据库中保留最近 8 份完整快照，并使用临时下载缓存。管理员可在账号设置下载全库备份。云模式见 DEPLOYMENT.md。请定期将 `data/backups/` 复制到另一台机器或有版本历史的存储中，并监控磁盘空间；同一硬盘上的备份无法抵御整块硬盘损坏。页面也可导出项目 JSON 备份。
 
 恢复单项误改优先使用页面历史版本；恢复误删优先使用项目 / 任务回收站。若需要恢复完整数据库：先停止所有应用实例，再备份整个当前 `data/` 目录；把所选完整 `.sqlite3` 备份复制到一个**新的空数据目录**中并命名为 `project.sqlite3`，然后使用新目录启动（保留旧目录以便回退）：
 
@@ -166,7 +166,7 @@ python3 -B server.py --data-dir /absolute/path/to/restored-data
 
 ## 部署到服务器
 
-GitHub 保存代码，GitHub Pages 托管 `docs/` 访问入口；登录、保存和数据库在在线服务器上运行。仓库提供 `render.yaml` 云服务部署配置和 Docker 部署方式，详见 [DEPLOYMENT.md](DEPLOYMENT.md)。不要将数据库、密码或用户填写内容提交到仓库。
+GitHub 保存代码，GitHub Pages 托管 `docs/` 访问入口；`render.yaml` 默认部署 Render Free，数据直接写入 Turso Free。免费应用不购买磁盘，临时目录只缓存下载备份。详见 [DEPLOYMENT.md](DEPLOYMENT.md)。以下 Docker 方式用于本机或自有持久服务器。不要将数据库、密码或用户填写内容提交到仓库。
 
 Docker Compose：
 
@@ -183,7 +183,7 @@ docker compose exec web cat /data/首次登录密码.txt
 
 单实例小团队部署：应用监听本机 8765 端口，前面配置 Nginx / Caddy 的 HTTPS 反向代理，把 `.env` 的 `BOARD_ORIGIN` 设置为实际域名（例如 `https://projects.example.com`，不带结尾斜线），并设置 `BOARD_COOKIE_SECURE=1`。
 
-数据必须使用本地持久磁盘或容器持久卷；不应放在临时文件系统、共享网络盘或每次发布被替换的代码目录中。该版本采用单实例 SQLite，不支持多个容器各自保存独立数据库，也未提供企业级高可用、团队邀请或细分成员权限。
+本机 / 自有服务器的 SQLite 数据库必须使用持久磁盘或容器持久卷，不放在临时目录、共享网络盘或会被发布替换的代码目录中。免费云版直接使用 Turso，临时目录仅作备份下载缓存。目前均按单实例部署，不提供企业级高可用、团队邀请或细分成员权限。
 
 环境变量：
 
@@ -196,6 +196,8 @@ docker compose exec web cat /data/首次登录密码.txt
 | `BOARD_ORIGIN` | 当前 HTTP 来源 | HTTPS 部署时填写公开来源 |
 | `BOARD_COOKIE_SECURE` | `0` | HTTPS 部署设置为 `1` |
 | `RENDER_EXTERNAL_URL` | 云平台提供 | Render 上未手动配置 `BOARD_ORIGIN` 时，自动用于 HTTPS 来源校验 |
+| `BOARD_DATABASE_MODE` | `sqlite` | 免费云部署固定为 `turso`，连接失败不会降级为本机数据库 |
+| `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | 无 | 云端数据库地址和读写令牌，只在私密环境变量中设置 |
 
 ## 验证
 
@@ -223,9 +225,11 @@ seed/project.json     海康项目原始 50 项任务及来源
 seed/cn-holidays.json 中国大陆 2025、2026 年官方放假 / 补班安排及来源
 tests/                API 和浏览器集成验证
 compose.yaml          单实例持久化部署
-render.yaml           云服务单实例与持久磁盘配置
+render.yaml           Render Free 与独立 Turso Free 数据库配置
+cloud_store.py        云数据库事务、完整快照和安全失败处理
+requirements-cloud.txt 云端驱动固定版本与文件校验
 docs/                 GitHub Pages 访问入口和发布状态，不含业务数据
-scripts/              部署检查、验证网址、完整数据库迁移准备
-DEPLOYMENT.md         云平台授权发布、迁移、入口连接和验收步骤
+scripts/              部署检查、验证网址、迁移准备及空云库导入
+DEPLOYMENT.md         免费平台授权发布、迁移、入口连接和验收步骤
 data/                 运行时数据库、初始密码和完整备份（不提交 Git）
 ```

@@ -1,23 +1,25 @@
-# Render Blueprint. A paid instance and persistent disk are intentional:
-# never move BOARD_DATA_DIR to an ephemeral/free service filesystem.
+# Free web service, with all durable records in a separate Turso Free database.
+# /tmp is only a disposable backup cache. Missing cloud credentials abort startup.
 services:
   - type: web
     name: project-space
     runtime: python
     region: singapore
-    plan: starter
+    plan: free
     numInstances: 1
-    buildCommand: python -B scripts/check_deploy.py
+    buildCommand: python -m pip install --require-hashes -r requirements-cloud.txt && python -B scripts/check_deploy.py
     startCommand: python -B server.py --host 0.0.0.0
     healthCheckPath: /api/health
     autoDeploy: true
-    disk:
-      name: project-space-data
-      mountPath: /var/data
-      sizeGB: 5
     envVars:
+      - key: BOARD_DATABASE_MODE
+        value: turso
       - key: BOARD_DATA_DIR
-        value: /var/data
+        value: /tmp/project-space-cache
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
       - key: BOARD_COOKIE_SECURE
         value: "1"
       - key: PYTHONUNBUFFERED

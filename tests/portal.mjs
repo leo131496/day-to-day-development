@@ -29,11 +29,12 @@ try{
   await page.reload();await page.locator('#release-status').filter({hasText:'暂未就绪'}).waitFor();
   assert.equal(await page.locator('#enter-workspace').getAttribute('href'),null);
   await page.goto(base+'/deploy.html');assert.ok((await page.locator('a.primary').getAttribute('href')).startsWith('https://render.com/deploy?repo='));
-  assert.match(await page.locator('.setup-callout').textContent(),/费用/);
+  assert.match(await page.locator('.setup-callout').textContent(),/免费/);
+  assert.equal(await page.locator('a[href="https://turso.tech/"]').count(),1);
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
   await page.screenshot({path:path.join(root,'test-results/deploy-mobile.png'),fullPage:true});
   await page.setViewportSize({width:1440,height:980});await page.screenshot({path:path.join(root,'test-results/deploy-desktop.png'),fullPage:true});
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({passed:['truthful pending deployment state','no fake login or save controls','verified URL configuration','invalid URL blocked','mobile portal and setup','cloud authorization and pricing disclosure'],consoleErrors:errors}));
+  console.log(JSON.stringify({passed:['truthful pending deployment state','no fake login or save controls','verified URL configuration','invalid URL blocked','mobile portal and setup','free plans and account authorization disclosure'],consoleErrors:errors}));
 }catch(err){console.error(err);console.error(logs.slice(-2000));process.exitCode=1;}
 finally{if(browser)await browser.close();if(service&&service.exitCode===null){service.kill('SIGTERM');await new Promise(r=>service.once('exit',r));}}

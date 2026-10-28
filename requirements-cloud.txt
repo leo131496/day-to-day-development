@@ -1,0 +1,4 @@
+# Only needed for the free hosted database; local SQLite stays dependency-free.
+turso-serverless==0.1.0 \
+    --hash=sha256:6a45e7f7c66ed5831f940bf40c45c02f1a0021be102bd9abff8e5899fa79c107 \
+    --hash=sha256:36fdcc55b7f88e270a014e418c6220bb9f48da5087469f3dfacc68e56be05509

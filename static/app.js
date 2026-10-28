@@ -92,7 +92,12 @@ function accountSettings(){
     if(data.newPassword!==data.confirmPassword){$('password-error').textContent='两次输入的新密码不一致。';return;}
     const controls=[...e.target.elements];controls.forEach(input=>input.disabled=true);$('password-error').textContent='';
     try{setSession(await post('/api/change-password',data));$('account-editor').close();$('account-editor').innerHTML='';toast('密码已修改，其他设备需使用新密码重新登录。');}catch(err){$('password-error').textContent=err.message;}finally{controls.forEach(input=>input.disabled=false);}
-  };$('account-editor').showModal();
+  };
+  if(user.role==='admin'){
+    $('account-editor').insertAdjacentHTML('beforeend','<section class="dialog-body"><div class="form-section">完整数据库备份</div><p class="muted">包含全部账号、项目与历史记录，请另存到私人存储中。</p><button type="button" id="download-database-backup">下载完整备份</button></section>');
+    $('download-database-backup').onclick=exportDatabase;
+  }
+  $('account-editor').showModal();
 }
 $('home').onclick=()=>home();$('trash').onclick=()=>home(true);
 $('side-add').onclick=()=>projectEditor();
@@ -328,6 +333,14 @@ async function archiveProject(id){
   try{await post('/api/projects/'+id+'/archive',{version:p.version});await loadProjects();if(p.archived)await openProject(id);else home();toast(p.archived?'项目已恢复。':'项目已移入回收站。');}catch(err){toast(err.message);}
 }
 function download(data,name,type){const a=document.createElement('a'),url=URL.createObjectURL(new Blob([data],{type}));a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);}
+async function exportDatabase(){
+  const button=$('download-database-backup');button.disabled=true;button.textContent='正在生成完整备份…';
+  try{
+    const response=await fetch('/api/admin/database-backup',{headers:{'X-Requested-With':'ProjectBoard'},cache:'no-store'});
+    if(!response.ok){const data=await response.json();if(response.status===401)showLogin();throw Error(data.error||'备份失败，请稍后重试');}
+    download(await response.arrayBuffer(),'项目工作台-完整备份-'+today()+'.sqlite3','application/vnd.sqlite3');toast('完整备份已下载，请保存在私人存储中，不要上传公开仓库。');
+  }catch(err){toast(err.message);}finally{button.disabled=false;button.textContent='下载完整备份';}
+}
 async function exportProject(){try{const data=await api(projectPath('/export'));download(JSON.stringify(data,null,2),state.project.name+'-备份-'+today()+'.json','application/json');toast('已导出数据库中的全部项目任务，包含回收站任务。');}catch(err){toast(err.message);}}
 async function exportCSV(){
   try{const data=await api(projectPath('/export'));const columns=[['id','任务编号'],['stage','阶段'],['title','任务名称'],['content','项目内容'],['owner','负责人'],['collaborator','协作人'],['status','状态'],['progress','完成率'],['start','计划开始'],['end','计划结束'],['workingDays','有效工作日'],['plannedHours','计划工时H'],['hoursRule','工时计算依据'],['nextAction','下一步待办'],['followup','跟进日'],['blocker','问题风险'],['decision','待决策'],['criteria','验收要点'],['evidence','交付记录'],['actualEnd','实际完成日'],['acceptance','验收结论'],['archived','在回收站']];

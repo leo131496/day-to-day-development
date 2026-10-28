@@ -1,64 +1,86 @@
-# 从 GitHub 发布项目工作台
+# 免费发布项目工作台
 
-GitHub 仓库保存代码，GitHub Pages 提供可分享的访问入口；Python 服务和 SQLite 数据库使用 Render 常驻实例及持久磁盘。工作台的所有操作仍在同一个云服务来源下进行，不依赖跨站登录 Cookie。
+当前默认方案：**GitHub Pages 免费访问入口 + Render Free 应用服务 + Turso Free 云数据库**。不创建付费实例、付费磁盘或付费数据库。
 
-- 仓库：<https://github.com/leo131496/day-to-day-development>
-- GitHub 访问入口：<https://leo131496.github.io/day-to-day-development/>
-- 云服务发布：<https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2Fleo131496%2Fday-to-day-development>
+- 公开入口：<https://leo131496.github.io/day-to-day-development/>
+- 免费数据库：<https://turso.tech/>
+- 免费应用发布：<https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2Fleo131496%2Fday-to-day-development>
+- 官方套餐与配额：<https://turso.tech/pricing>、<https://render.com/docs/free>
 
-**访问入口发布不等于完整应用已上线。** `docs/config.json` 的 `appUrl` 为空时，页面显示“云端工作台待发布”，不会展示无法工作的登录或保存操作。云端地址只能在实际发布后确认，不能预先假定某个 `.onrender.com` 地址已经属于当前账号。
+入口显示“待发布”时，完整业务系统尚未上线。云平台账号需要由使用者注册、登录并授权；不需要把数据库公开或上传 GitHub。
 
-## 一、登录云平台并发布
+## 1. 创建免费数据库
 
-1. 打开上述 Render 发布链接，用自己的账号登录，并授权读取此 GitHub 仓库。
-2. 核对 `render.yaml` 中的配置：Python Web 服务、Singapore 区域、单个 Starter 实例、5GB 持久磁盘、挂载 `/var/data`。此配置需要付费，按平台确认页的最新价格决定是否创建；不在代码中保存付款信息。
-3. 为 `BOARD_PASSWORD` 设置至少 12 个字符的管理员初始密码。只在 Render 环境变量中设置，不提交 GitHub。
-4. 确认创建。构建阶段运行 Python 自动测试；通过后启动服务并检查 `/api/health`。代码不需要第三方运行库。
-5. 等服务显示 Live，复制实际 HTTPS 地址。浏览器打开 `/api/health` 应看到 `{"ok":true}`；再打开根地址检查登录、注册和项目页面。
+在 Turso 注册 / 登录，选择 **Free（$0）**，创建独立的项目数据库。在数据库设置中取得数据库 URL（形如 `turso://数据库名-组织名.turso.io`）和具有读写权限的 Auth Token。
 
-Render 原生 Python 服务自带运行环境；未固定过时的小版本。`PORT` 和 `RENDER_EXTERNAL_URL` 由平台提供，应用自动使用后者校验 HTTPS 请求来源。自定义域名时，将 `BOARD_ORIGIN` 设置为实际 HTTPS 域名，并在平台完成域名绑定及证书配置。登录 Cookie 使用 Secure，仅通过 HTTPS 传送。
+Turso 官方页面当前显示 Free 无需信用卡，包含 5GB 存储、每月 5 亿行读取及 1000 万行写入。配额包含业务数据、索引和备份，以平台控制台最新规则为准。达到免费配额可能停止服务，不开通付费套餐或付费超额使用。
 
-数据库、历史记录、导入预览和应用备份均放在 `/var/data`。不得删除持久磁盘、改用代码目录作为数据库路径，或开多个保存独立 SQLite 文件的实例。服务更新会读取原数据库，初始化计划只写入一次。删除云平台服务或磁盘属于数据删除操作；应用备份也在同一磁盘，仍需定期另存到独立存储。
+应用使用官方 `turso-serverless` 驱动直接提交云数据库事务；不通过临时 SQLite 文件或稍后同步来保存业务数据。连接失败、令牌失效或配额不足时明确报错，不切换本机存储。驱动版本和哈希固定在 `requirements-cloud.txt`；云端需要 Python 3.10+，本机 SQLite 版本继续支持原 Python 环境。
 
-## 二、迁移现有本机数据
+接入代码已用官方驱动连接本机 SQL-over-HTTP 模拟服务验证事务、重启持久性及备份恢复；真实 Turso 数据库仍需在账号授权后联调，不能把模拟测试当作真实服务已上线。
 
-首次空盘部署会创建初始项目和新的管理员；**它不会自动带走本机已有数据**。如果要保留本机账号、项目填写和历史，必须迁移完整数据库，而非只导入代码中的种子计划。
+## 2. 先迁移本机记录，再发布应用
 
-在本机生成一致、可校验的迁移文件（可在本机服务运行时生成）：
+若沿用本机项目、账号、密码和历史，先将完整备份迁移到**空的 Turso 数据库**，不要先启动应用填入新数据后再覆盖。
+
+本机生成一致的私密备份，可在本机服务运行时执行：
 
 ```bash
 python3 -B scripts/prepare_migration.py --output data/migration/project-cloud.sqlite3
 ```
 
-目标文件已存在时不会覆盖。迁移副本保留所有业务记录、用户密码哈希、工作日历和导入记录，清除会话及限流记录，让云端设备重新登录；不会修改原数据库。文件权限为仅当前用户可读写，包含私密数据，**不要上传公开仓库、GitHub Releases、Pages 或公开下载链接**。
+已经准备的迁移文件可以直接使用；不覆盖旧备份。文件包含私密业务数据、密码哈希及恢复码哈希，禁止上传公开 GitHub、Pages、Releases 或公开分享链接。
 
-迁移必须在邀请使用前安排维护窗口：
+在本机 Python 3.10+ 环境安装云驱动，并在私密环境变量中配置 `TURSO_DATABASE_URL`、`TURSO_AUTH_TOKEN`。令牌不要放进公开 issue、提交或部署日志。执行：
 
-1. 在云平台暂停应用进程，避免迁移时仍有人写入；保留当前云数据库及全部相关文件的完整备份。本机数据库继续保留，不删除。
-2. 经平台支持的私密文件传输 / SSH 通道，将迁移文件上传到持久磁盘的临时目录。实际传输方式和远程连接权限由云平台账号提供；不要用公开分享来中转数据库。
-3. 确认应用已经停止后，将迁移文件放到**新的空目录**（例如 `/var/data/migrated`）并命名为 `project.sqlite3`，将 `BOARD_DATA_DIR` 改为该目录，保留旧数据目录供回退。不要在运行时覆盖数据库或丢弃 WAL 文件。
-4. 启动服务，使用本机原有账号密码登录。已有账号不会被 `BOARD_PASSWORD` 重置。核对项目、任务数量、具体填写、历史记录、日历及导入记录，再用临时测试项目验证保存 / 重启后保留。
-5. 完成迁移和核对后再公布正式工作台。迁移后的新增数据以云端为准，避免同时在本机和云端分别填写。
+```bash
+python -m pip install --require-hashes -r requirements-cloud.txt
+python -B scripts/migrate_turso.py --source data/migration/project-cloud.sqlite3
+```
 
-## 三、连接 GitHub 访问入口
+迁移仅接受空数据库，目标已有表时整批停止。迁移在一个事务内创建结构、复制记录、核对数量和关联；保留账号、工作项、历史、日历和导入预览，清除会话及限流记录。本机原库不变。若中断后无法确认提交，先检查云端状态，不盲目重复。
 
-云服务完成数据迁移和验收后，在仓库目录运行：
+若不需要本机填写，可直接使用空数据库发布：应用初始化原始计划和新管理员。**初始化种子不等于迁移现有填写内容。**
+
+## 3. 发布免费应用
+
+打开 Render 发布链接，登录并授权当前仓库，核对 `render.yaml`：
+
+- 实例为 `plan: free`，单实例，不添加磁盘。
+- `BOARD_DATABASE_MODE=turso`，直接使用云数据库。
+- `BOARD_DATA_DIR=/tmp/project-space-cache` 只放下载备份缓存，不放业务数据库。
+- 将 Turso URL 和读写 Token 填入 Render 环境变量。
+- 设置至少 12 个字符的 `BOARD_PASSWORD`，仅在空库首次创建管理员时使用。迁移后沿用原账号密码，不被该变量重置。
+
+若平台要求升级或购买磁盘，先停止，不确认付费。正常免费配置无需购买磁盘，持久数据由 Turso Free 保存。
+
+构建阶段安装校验过的驱动并运行测试；通过后启动服务，检查 `/api/health`。缺少数据库配置时启动失败，避免把业务数据误写到免费服务临时磁盘。
+
+Render 提供 `PORT`、`RENDER_EXTERNAL_URL`，应用校验 HTTPS 来源并使用 Secure Cookie。可直接使用平台提供的 HTTPS 子域名，无需购买域名；自定义域名时再配置 `BOARD_ORIGIN` 与平台域名 / 证书。
+
+## 4. 免费限制与备份
+
+免费应用无人访问时可能休眠，首次打开需要等待唤醒；构建、运行时长、网络和数据库有配额，不提供付费服务的可用性保障。休眠、重新部署不会清除独立云数据库中已提交的记录。删除云数据库、关闭账号、误删或服务商政策变化仍会影响数据，不能承诺绝不丢失。
+
+云数据库中保留最近 **8 份**完整快照，按内容去重并压缩分块保存，覆盖项目、账号、历史、日历和导入记录；不递归包含其他快照。自动备份在启动、每小时、导入前及正常停止触发。备份失败时批量导入停止；已有记录保留，普通保存仍使用事务和逐项历史。
+
+云快照与业务数据位于同一个 Turso 数据库，不能抵御整个数据库或账号被删除。管理员请定期从 **账号设置 → 下载完整备份** 另存私人电脑或独立存储；其他账号无权导出全库。项目原有 JSON / CSV 导出保留。
+
+`cloud_store.restore_archive(store, backup_id, target)` 可校验并下载一个新的 SQLite 文件，不覆盖在线数据。全库恢复应迁移到新的空云数据库，再在维护窗口切换配置，保留原库供回退。
+
+## 5. 连接 GitHub 入口
+
+服务实际显示 Live 后，将真实 HTTPS 网址发回当前对话，核对账号、记录数量、历史、导入及重启持久性。检查完成后：
 
 ```bash
 python3 -B scripts/configure_public_url.py https://实际云端域名
 git add docs/config.json
-git commit -m "Connect verified hosted workspace"
+git commit -m "Connect verified free hosted workspace"
 git push origin main
 ```
 
-脚本先检查数据库健康接口，再更新入口地址；检查失败时保留旧配置。发布后同事和客户可从 GitHub 访问入口点击“进入项目工作台”，也可直接使用云端 HTTPS 网址。入口与部署说明不会包含密码、令牌或业务数据。
+脚本先检查数据库健康接口，成功后设置入口。GitHub Pages 来源为 `main / docs`，仓库 About → Website 指向公开入口。入口不包含数据库 Token 或业务内容。
 
-GitHub 仓库 Settings → Pages 的来源为 **Deploy from a branch / main / docs**；About → Website 指向 GitHub Pages 入口地址。Pages 构建就绪后公开访问；如果修改配置后暂未更新，等待 GitHub Pages 发布结束再刷新。
+GitHub 推送触发 Render 自动部署；以平台测试、启动和健康检查结果判断更新是否成功，不能把推送成功当成网站已上线。单实例更新或免费服务唤醒可能短暂中断访问。
 
-## 四、日常更新与验收
-
-`render.yaml` 开启代码自动部署。推送后先运行测试，启动成功并通过健康检查后再接受流量；失败时应检查 Render 日志及部署状态，不把 GitHub 推送成功视为服务发布成功。单实例 SQLite 更新可能短暂中断服务，不提供多实例高可用。
-
-至少检查：公开 HTTPS 地址可达；账号登录及注册；创建项目与工作项；导入预览再保存；看板统计；修改密码；版本冲突；服务重启后数据保留；完整备份可用。
-
-当前账号的项目互相隔离。同事和客户可以注册使用各自空间；共享同一个项目仍需独立的团队成员 / 邀请权限功能，不应通过公开数据库或共享管理员密码实现。
+不同账号目前使用独立项目空间。同事和客户上线后可注册；共同编辑同一个项目需要另外增加成员权限，不应共享管理员密码。
