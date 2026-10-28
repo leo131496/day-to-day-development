@@ -2,6 +2,8 @@
 
 轻量的多项目管理应用：从项目内容生成工作清单，统一维护责任分工、排期工时、进度、风险及交付验收。内置海康 × 致趣项目原有的 50 项计划；Python 标准库 + SQLite，无须安装第三方运行依赖。
 
+公开访问入口：[序 · 项目工作台](https://leo131496.github.io/day-to-day-development/)。云端应用发布前，入口会显示“待发布”，不提供虚假的登录或保存操作。使用 [Render 发布配置](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2Fleo131496%2Fday-to-day-development) 创建常驻服务及持久磁盘，完成数据迁移和检查后连接正式网址；需要你登录云平台授权并确认费用。完整步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+
 ## 已实现
 
 - **多个项目**：新增、查看、编辑、删除到回收站、恢复，项目数据相互隔离。
@@ -164,7 +166,7 @@ python3 -B server.py --data-dir /absolute/path/to/restored-data
 
 ## 部署到服务器
 
-GitHub 保存的是代码，网站运行和数据库存储需要服务器。不要使用 GitHub Pages 承载此应用，也不要将数据库、密码或用户填写内容提交到仓库。
+GitHub 保存代码，GitHub Pages 托管 `docs/` 访问入口；登录、保存和数据库在在线服务器上运行。仓库提供 `render.yaml` 云服务部署配置和 Docker 部署方式，详见 [DEPLOYMENT.md](DEPLOYMENT.md)。不要将数据库、密码或用户填写内容提交到仓库。
 
 Docker Compose：
 
@@ -193,6 +195,7 @@ docker compose exec web cat /data/首次登录密码.txt
 | `BOARD_PASSWORD` | 自动生成 | 仅首次初始化管理员密码使用 |
 | `BOARD_ORIGIN` | 当前 HTTP 来源 | HTTPS 部署时填写公开来源 |
 | `BOARD_COOKIE_SECURE` | `0` | HTTPS 部署设置为 `1` |
+| `RENDER_EXTERNAL_URL` | 云平台提供 | Render 上未手动配置 `BOARD_ORIGIN` 时，自动用于 HTTPS 来源校验 |
 
 ## 验证
 
@@ -220,5 +223,9 @@ seed/project.json     海康项目原始 50 项任务及来源
 seed/cn-holidays.json 中国大陆 2025、2026 年官方放假 / 补班安排及来源
 tests/                API 和浏览器集成验证
 compose.yaml          单实例持久化部署
+render.yaml           云服务单实例与持久磁盘配置
+docs/                 GitHub Pages 访问入口和发布状态，不含业务数据
+scripts/              部署检查、验证网址、完整数据库迁移准备
+DEPLOYMENT.md         云平台授权发布、迁移、入口连接和验收步骤
 data/                 运行时数据库、初始密码和完整备份（不提交 Git）
 ```

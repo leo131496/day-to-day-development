@@ -373,7 +373,7 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get('Origin')
         if self.headers.get('Sec-Fetch-Site') == 'cross-site':
             raise APIError(403, '请从项目页面提交')
-        allowed = os.environ.get('BOARD_ORIGIN')
+        allowed = os.environ.get('BOARD_ORIGIN') or os.environ.get('RENDER_EXTERNAL_URL')
         if origin and origin != (allowed or ('http://' + self.headers.get('Host', ''))):
             raise APIError(403, '页面来源校验失败')
         if self.headers.get('X-Requested-With') != 'ProjectBoard':

@@ -1,0 +1,26 @@
+# Render Blueprint. A paid instance and persistent disk are intentional:
+# never move BOARD_DATA_DIR to an ephemeral/free service filesystem.
+services:
+  - type: web
+    name: project-space
+    runtime: python
+    region: singapore
+    plan: starter
+    numInstances: 1
+    buildCommand: python -B scripts/check_deploy.py
+    startCommand: python -B server.py --host 0.0.0.0
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: project-space-data
+      mountPath: /var/data
+      sizeGB: 5
+    envVars:
+      - key: BOARD_DATA_DIR
+        value: /var/data
+      - key: BOARD_COOKIE_SECURE
+        value: "1"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: BOARD_PASSWORD
+        sync: false
