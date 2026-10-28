@@ -1,0 +1,16 @@
+name: project-space
+services:
+  web:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      BOARD_PASSWORD: ${BOARD_PASSWORD:-}
+      BOARD_ORIGIN: ${BOARD_ORIGIN:-}
+      BOARD_COOKIE_SECURE: ${BOARD_COOKIE_SECURE:-0}
+    volumes:
+      - board_data:/data
+    stop_grace_period: 30s
+volumes:
+  board_data:
