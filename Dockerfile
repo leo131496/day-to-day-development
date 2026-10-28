@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 WORKDIR /app
-COPY server.py work_calendar.py work_import.py cloud_store.py /app/
+COPY server.py work_calendar.py work_import.py cloud_store.py risk_register.py /app/
 COPY static /app/static
 COPY seed /app/seed
 ENV PYTHONDONTWRITEBYTECODE=1 BOARD_HOST=0.0.0.0 BOARD_DATA_DIR=/data PORT=8765

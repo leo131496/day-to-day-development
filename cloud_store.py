@@ -17,7 +17,7 @@ class CloudDatabaseError(RuntimeError):
 
 
 APP_TABLES = ('meta','projects','tasks','revisions','sessions','users','auth_attempts',
-              'work_calendars','calendar_revisions','import_batches')
+              'work_calendars','calendar_revisions','import_batches','risks','risk_revisions')
 
 
 def database_url(value):

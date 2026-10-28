@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 from work_calendar import DEFAULT_CALENDARS, calendar_from_text, calculate_workload, enrich_task, project_metrics
 from work_import import ImportProblem, MAX_FILE, parse_document, read_link
 from cloud_store import CloudDatabaseError
+from risk_register import SCHEMA as RISK_SCHEMA, route as route_risks, validate as validate_risk, write as write_risk
 
 ROOT = Path(__file__).resolve().parent
 STATUSES = ['待确认', '未开始', '进行中', '待验收', '受阻', '已延期', '暂停', '已完成']
@@ -218,7 +219,7 @@ class Store:
                 CREATE TABLE IF NOT EXISTS import_batches(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
                     user_id TEXT NOT NULL REFERENCES users(id), data TEXT NOT NULL, versions TEXT NOT NULL,
                     created_at TEXT NOT NULL, applied_at TEXT, request_hash TEXT, result TEXT);
-            ''')
+            '''+RISK_SCHEMA)
             db.execute('BEGIN IMMEDIATE')
             if not db.execute("SELECT 1 FROM meta WHERE key='initialized'").fetchone():
                 seed = json.loads((ROOT / 'seed/project.json').read_text())
@@ -322,9 +323,10 @@ class Store:
             project = {**json.loads(row['data']), 'id': row['id'], 'version': row['version'], 'archived': bool(row['archived'])}
             calendars = self.calendars(row['owner_id'], db)
             tasks = [enrich_task(self.task(r), calendars) for r in db.execute('SELECT * FROM tasks WHERE project_id=? ORDER BY id', (project_id,))]
+            risks = [self.task(r) for r in db.execute('SELECT * FROM risks WHERE project_id=? ORDER BY updated_at DESC,id', (project_id,))]
             summary = project_metrics(tasks)
             return {'format': 'project-board-v1', 'exportedAt': now(), 'project': project, 'tasks': tasks,
-                    'summary': summary, 'workCalendar': {'region': 'CN', 'hoursPerDay': 8, 'inclusive': True, 'years': calendars}}
+                    'risks': risks, 'summary': summary, 'workCalendar': {'region': 'CN', 'hoursPerDay': 8, 'inclusive': True, 'years': calendars}}
 
 
 class TursoStore(Store):
@@ -443,6 +445,7 @@ class Handler(BaseHTTPRequestHandler):
             files = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/auth.css': 'auth.css',
                      '/worklist.css': 'worklist.css', '/dashboard.css': 'dashboard.css', '/dashboard.js': 'dashboard.js',
                      '/importer.js': 'importer.js', '/importer.css': 'importer.css', '/favicon.svg': 'favicon.svg'}
+            files.update({'/risks.js': 'risks.js', '/risks.css': 'risks.css'})
             if method != 'GET' or path not in files:
                 raise APIError(404, '页面不存在')
             file = ROOT / 'static' / files[path]
@@ -555,6 +558,8 @@ class Handler(BaseHTTPRequestHandler):
             if project_row['archived'] and method != 'GET':
                 raise APIError(409, '请先从回收站恢复项目再编辑')
         path = '/api' + (suffix or '/project')
+        if path == '/api/risks' or path.startswith('/api/risks/'):
+            return route_risks(self, project_id, path, method, APIError, now)
         if path == '/api/project' and method == 'GET':
             return self.respond(200, {**self.store.snapshot(project_id), 'backup': {
                 'lastAt': self.store.last_backup, 'error': self.store.backup_error}})
@@ -842,14 +847,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def import_tasks(self, project_id, body):
         values = body.get('tasks')
-        if not isinstance(values, list) or not 1 <= len(values) <= 2000:
-            raise APIError(400, '请选择包含任务的项目备份')
+        risk_values = body.get('risks', [])
+        if (not isinstance(values, list) or len(values) > 2000 or not isinstance(risk_values, list)
+                or len(risk_values) > 2000 or not values and not risk_values):
+            raise APIError(400, '请选择包含任务或风险清单的项目备份')
         tasks = [validate_task(task) for task in values]
+        risks = [validate_risk(risk, APIError) for risk in risk_values]
         if len({t['id'] for t in tasks}) != len(tasks):
             raise APIError(400, '导入文件包含重复任务编号')
+        if len({risk['id'] for risk in risks}) != len(risks):
+            raise APIError(400, '导入文件包含重复风险编号')
         expected = body.get('versions')
         if not isinstance(expected, dict):
             raise APIError(400, '缺少导入前的版本信息，请重新选择文件')
+        risk_expected = body.get('riskVersions', {})
+        if risks and not isinstance(risk_expected, dict):
+            raise APIError(400, '缺少风险清单的版本信息')
         # Backup before any bulk change. Existing tasks absent from the file are kept.
         self.store.backup()
         with self.store.connect() as db:
@@ -861,11 +874,21 @@ class Handler(BaseHTTPRequestHandler):
             conflicts = [t['id'] for t in tasks if expected.get(t['id'], 0) != (rows[t['id']]['version'] if t['id'] in rows else 0)]
             if conflicts:
                 raise APIError(409, '导入期间任务已发生变化，请刷新后重新导入', conflicts=conflicts)
+            risk_rows = {r['id']: r for r in db.execute('SELECT * FROM risks WHERE project_id=?', (project_id,))}
+            if any(risk_expected.get(r['id'], 0) != (risk_rows[r['id']]['version'] if r['id'] in risk_rows else 0) for r in risks):
+                raise APIError(409, '导入期间风险清单已发生变化，请刷新后重新导入')
+            task_ids = set(rows) | {task['id'] for task in tasks}
+            if any(r['linkedTaskId'] and r['linkedTaskId'] not in task_ids for r in risks):
+                raise APIError(400, '风险关联的工作项不存在，请核对备份所属项目')
             for task, raw in zip(tasks, values):
                 old = rows.get(task['id'])
                 archived = raw.get('archived') if type(raw.get('archived')) is bool else bool(old['archived']) if old else False
                 self.store.write(db, project_id, task, old['version'] if old else 0, '导入填写记录', archived)
-        self.respond(200, {'ok': True, 'count': len(tasks)})
+            for risk, raw in zip(risks, risk_values):
+                old = risk_rows.get(risk['id'])
+                archived = raw.get('archived') if type(raw.get('archived')) is bool else bool(old['archived']) if old else False
+                write_risk(db, project_id, risk, old['version'] if old else 0, '导入风险记录', now(), archived)
+        self.respond(200, {'ok': True, 'count': len(tasks), 'riskCount': len(risks)})
 
 
 def make_server(directory, host='127.0.0.1', port=8765):

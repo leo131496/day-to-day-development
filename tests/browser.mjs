@@ -34,11 +34,29 @@ try{
   await page.locator('[data-close="account-editor"]').click();
   await page.locator('.project-card [data-project="haikang"]').click();await page.locator('[data-work-row]').first().waitFor();
   assert.equal(await page.locator('[data-work-row]').count(),50);
+  assert.equal(await page.locator('.work-table tfoot').count(),0);
+  assert.ok(!(await page.locator('.work-register').textContent()).includes('当前筛选合计'));
+  assert.equal(await page.locator('.status-legend>span').count(),5);
+  await page.locator('.data-provenance summary').click();
+  assert.match(await page.locator('.data-provenance').textContent(),/2026-10-27/);
+  assert.match(await page.locator('.data-provenance').textContent(),/未实时同步外部文档/);
+  assert.match(await page.locator('.data-provenance').textContent(),/不合并为项目工期或人天/);
+  await page.locator('.data-provenance summary').click();
+  assert.ok(await page.locator('.work-description').first().evaluate(el=>parseFloat(getComputedStyle(el).fontSize)>=14));
   assert.match(await page.locator('.viewtab.active').textContent(),/项目工作清单/);
   for(const text of ['负责人','当前状态','开始日期','结束日期','工作日','计划工时','进度'])assert.ok((await page.locator('.work-table thead').textContent()).includes(text));
   await page.screenshot({path:path.join(root,'test-results/worklist-seed.png'),fullPage:true});
   // Every visualization must reflect saved records, and browsing charts cannot mutate them.
   const seedTasks=await page.evaluate(async()=>(await (await fetch('/api/projects/haikang')).json()).tasks);
+  for(const [status,color] of [['未开始','rgb(102, 112, 133)'],['进行中','rgb(6, 118, 71)'],['已完成','rgb(21, 112, 239)']]){
+    const task=seedTasks.find(t=>t.status===status);
+    assert.equal(await page.locator(`[data-work-row="${task.id}"] .task-statuses .tag`).first().evaluate(el=>getComputedStyle(el).color),color);
+  }
+  assert.equal(await page.locator('.task-statuses .tag.red').first().evaluate(el=>getComputedStyle(el).color),'rgb(217, 45, 32)');
+  await page.locator('[data-view="overview"]').click();
+  assert.ok(await page.locator('.resource-table .tag.red').count()>0);
+  assert.ok(await page.locator('.resource-table td').first().evaluate(el=>parseFloat(getComputedStyle(el).fontSize)>=14));
+  await page.screenshot({path:path.join(root,'test-results/overview-seed.png'),fullPage:true});
   await page.locator('[data-view="dashboard"]').click();
   assert.equal(await page.locator('[data-dashboard-kpi="total"]').textContent(),'50项');
   assert.equal(await page.locator('[data-dashboard-kpi="completed"]').textContent(),seedTasks.filter(t=>t.status==='已完成'&&t.progress===1).length+'项');
@@ -80,6 +98,10 @@ try{
   await page.locator('.dash-owner-buttons [data-value=""]').click();assert.equal(await page.locator('[data-dashboard-total]').getAttribute('data-dashboard-total'),'1');assert.equal(await page.locator('#filter-focus').inputValue(),'unassigned');
   await page.locator('[data-action="reset-dashboard-filters"]').click();await page.locator('[data-view="board"]').click();
   assert.equal(await page.locator('.task-card').count(),3);
+  await page.locator('[data-task="T-001"]').click();
+  await page.locator('[name="status"]').selectOption('暂停');await page.locator('#save-task').click();await page.locator('#editor').waitFor({state:'hidden'});
+  const suspended=page.locator('.task-card[data-task="T-001"] .tag.amber').filter({hasText:'挂起'});
+  assert.equal(await suspended.evaluate(el=>getComputedStyle(el).color),'rgb(148, 98, 0)');
   await page.locator('[data-task="T-001"]').click();
   await page.locator('[name="nextAction"]').fill('已完成访谈并整理纪要');await page.locator('[name="status"]').selectOption('进行中');await page.locator('[name="progress"]').fill('45');
   await page.locator('#save-task').click();await page.locator('#editor').waitFor({state:'hidden'});
@@ -160,6 +182,48 @@ try{
   assert.equal(await page.locator('[data-work-row]').count(),8);assert.match(await page.locator('.viewtab.active').textContent(),/项目工作清单/);
   const imported=page.locator('[data-work-row]').filter({hasText:'导入验收'});assert.match(await imported.textContent(),/导入负责人/);assert.match(await imported.textContent(),/24 H/);
   await page.locator('[data-view="dashboard"]').click();assert.equal(await page.locator('[data-dashboard-kpi="total"]').textContent(),'8项');await page.locator('[data-view="list"]').click();
+  // The independent risk register persists, preserves drafts, and supports recoverable deletion.
+  assert.match(await page.locator('.viewtab').nth(4).textContent(),/风险清单/);
+  await page.locator('[data-view="risks"]').click();await page.locator('[data-risk-action="new"]').click();
+  await page.locator('#risk-form [name="title"]').fill('客户接口交付延期');
+  await page.locator('#risk-form [name="description"]').fill('接口确认延迟，可能影响项目联调。');
+  await page.locator('#risk-form [name="owner"]').fill('风险负责人');
+  await page.locator('#risk-field-probability').selectOption('3');await page.locator('#risk-field-impact').selectOption('3');
+  await page.locator('#risk-field-linkedTaskId').selectOption('T-001');
+  await page.locator('#risk-form [name="response"]').fill('约定接口交付日期，提前准备模拟接口。');
+  await page.locator('[data-close="risk-editor"]').click();await page.reload();await page.locator('.risk-register').waitFor();
+  await page.locator('[data-risk-action="new"]').click();assert.equal(await page.locator('#risk-form [name="title"]').inputValue(),'客户接口交付延期');
+  let droppedRisk=false;
+  await page.route('**/api/projects/*/risks',async route=>{if(route.request().method()==='POST'&&!droppedRisk){droppedRisk=true;await route.fetch();await route.abort('failed');}else await route.continue();});
+  await page.locator('#risk-save').click();await page.locator('#risk-error').filter({hasText:/fetch|网络|Failed/}).waitFor();
+  assert.equal(await page.locator('#risk-form [name="title"]').inputValue(),'客户接口交付延期');
+  await page.locator('#risk-save').click();await page.locator('#risk-editor').waitFor({state:'hidden'});await page.unroute('**/api/projects/*/risks');
+  assert.equal(await page.locator('[data-risk-row]').count(),1);assert.match(await page.locator('[data-risk-row]').textContent(),/重大风险/);
+  const riskId=await page.locator('[data-risk-row]').getAttribute('data-risk-row');
+  await page.locator('#risk-search').fill('不存在的风险');assert.equal(await page.locator('[data-risk-row]').count(),0);await page.locator('#risk-search').fill('');
+  await page.locator('#risk-level').selectOption('低');assert.equal(await page.locator('[data-risk-row]').count(),0);await page.locator('#risk-level').selectOption('');
+  await page.locator('[data-risk-edit]').click();await page.locator('#risk-field-status').selectOption('已关闭');await page.locator('#risk-save').click();
+  assert.match(await page.locator('#risk-error').textContent(),/处理结果/);
+  await page.locator('#risk-form [name="resolution"]').fill('已确认交付并完成联调验收。');await page.locator('#risk-save').click();await page.locator('#risk-editor').waitFor({state:'hidden'});
+  assert.match(await page.locator('[data-risk-row]').textContent(),/已关闭/);
+  await stop();await start();await page.reload();await page.locator('[data-risk-row]').waitFor();
+  assert.match(await page.locator('[data-risk-row]').textContent(),/已关闭/);
+  await page.locator('[data-risk-edit]').click();await page.locator('#risk-history summary').first().click();await page.locator('#risk-history-list .history-item').first().waitFor();
+  assert.equal(await page.locator('#risk-history-list .history-item').count(),2);await page.locator('[data-close="risk-editor"]').click();
+  const riskCSV=page.waitForEvent('download');await page.locator('[data-risk-action="export"]').click();const riskCSVFile=path.join(data,'risks.csv');await(await riskCSV).saveAs(riskCSVFile);assert.ok((await readFile(riskCSVFile,'utf8')).includes('客户接口交付延期'));
+  const riskSnapshot=await page.evaluate(async id=>(await(await fetch('/api/projects/'+id+'/export')).json()),projectId);assert.equal(riskSnapshot.risks.length,1);assert.equal(riskSnapshot.tasks.length,8);
+  await page.locator('.risk-table-scroll').evaluate(el=>el.scrollLeft=0);await page.evaluate(()=>scrollTo(0,0));
+  await page.screenshot({path:path.join(root,'test-results/risks-desktop.png'),fullPage:true});
+  await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(root,'test-results/risks-mobile.png'),fullPage:true});
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  await page.locator('[data-risk-edit]').click();await page.screenshot({path:path.join(root,'test-results/risk-editor-mobile.png'),fullPage:true});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await page.locator('[data-close="risk-editor"]').click();await page.setViewportSize({width:1512,height:1000});
+  await page.locator('[data-risk-edit]').click();page.once('dialog',d=>d.accept());await page.locator('[data-risk-delete]').click();await page.locator('#risk-editor').waitFor({state:'hidden'});
+  assert.equal(await page.locator('[data-risk-row]').count(),0);await page.locator('[data-risk-action="trash"]').click();
+  await page.locator('[data-risk-restore]').click();await page.locator('[data-risk-action="trash"]').click();assert.equal(await page.locator(`[data-risk-row="${riskId}"]`).count(),1);
+  await page.locator('[data-risk-edit]').click();await page.locator('#risk-form [name="description"]').fill('准备放弃的草稿');await page.locator('[data-close="risk-editor"]').click();
+  await page.locator('[data-risk-edit]').click();assert.equal(await page.locator('#risk-form [name="description"]').inputValue(),'准备放弃的草稿');
+  page.once('dialog',d=>d.accept());await page.locator('[data-risk-action="discard"]').click();assert.equal(await page.locator('#risk-form [name="description"]').inputValue(),'接口确认延迟，可能影响项目联调。');await page.locator('[data-close="risk-editor"]').click();
+  await page.locator('[data-view="list"]').click();assert.equal(await page.locator('[data-work-row]').count(),8);assert.equal(await page.locator('.work-table tfoot').count(),0);
   // Network failure cannot clear draft or close the editor.
   await page.locator('[data-task="T-001"]').click();await page.locator('[name="decision"]').fill('断网时填写的决策');await context.setOffline(true);await page.locator('#save-task').click();await page.locator('#task-error').filter({hasText:/fetch|网络|Failed/}).waitFor();assert.equal(await page.locator('[name="decision"]').inputValue(),'断网时填写的决策');await context.setOffline(false);await page.locator('#save-task').click();await page.locator('#editor').waitFor({state:'hidden'});
   await page.setViewportSize({width:390,height:844});await page.locator('[data-view="list"]').click();await page.screenshot({path:path.join(root,'test-results/worklist-mobile.png'),fullPage:true});
@@ -198,6 +262,6 @@ try{
   await page.locator('#logout').click();await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(root,'test-results/login-mobile.png'),fullPage:true});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
   await page.locator('#auth-tabs [data-auth-mode="register"]').click();await page.screenshot({path:path.join(root,'test-results/register-mobile.png'),fullPage:true});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({passed:['private admin database backup download','local file preview and inline corrections','import preview draft recovery','invalid rows and selection validation','import permission error and token clearing','import save retry without duplicate records','imported work hours and dashboard recalculation','mobile import dialog','automatic dashboard from saved tasks','dashboard stage and status filters','unassigned owner drilldown','chart keyboard navigation','Gantt editing and live recalculation','dashboard deletion and recovery counts','dashboard empty and zero-result states','dashboard mobile layout','dashboard navigation preserves data','default project work register','work content and responsibility columns','holiday and makeup-day hours preview','status filtering','missing-year calendar setup and recalculation','working-days and planned-hours CSV','50 seed tasks','multi-project generation','CRUD and search','process restart persistence','draft recovery','parallel conflict merge','version history','task recycle and restore','project recycle and restore','offline recovery','backup export','mobile layout','account registration','password confirmation validation','recovery-code download','user data isolation','password change and session revocation','password reset and recovery-code rotation','account persistence after restart','mobile login and registration'],consoleErrors:errors}));
+  console.log(JSON.stringify({passed:['worklist totals row removed','five task status colors','readable table typography','plan snapshot provenance','project risk CRUD and filtering','risk draft recovery','risk save retry without duplicate records','risk restart persistence','risk history and recoverable deletion','risk CSV and project backup','mobile risk register and editor','private admin database backup download','local file preview and inline corrections','import preview draft recovery','invalid rows and selection validation','import permission error and token clearing','import save retry without duplicate records','imported work hours and dashboard recalculation','mobile import dialog','automatic dashboard from saved tasks','dashboard stage and status filters','unassigned owner drilldown','chart keyboard navigation','Gantt editing and live recalculation','dashboard deletion and recovery counts','dashboard empty and zero-result states','dashboard mobile layout','dashboard navigation preserves data','default project work register','work content and responsibility columns','holiday and makeup-day hours preview','status filtering','missing-year calendar setup and recalculation','working-days and planned-hours CSV','50 seed tasks','multi-project generation','CRUD and search','process restart persistence','draft recovery','parallel conflict merge','version history','task recycle and restore','project recycle and restore','offline recovery','backup export','mobile layout','account registration','password confirmation validation','recovery-code download','user data isolation','password change and session revocation','password reset and recovery-code rotation','account persistence after restart','mobile login and registration'],consoleErrors:errors}));
 }catch(error){console.error(error);console.error(logs.slice(-7000));process.exitCode=1;}
 finally{if(browser)await browser.close();await stop();await rm(data,{recursive:true,force:true});}

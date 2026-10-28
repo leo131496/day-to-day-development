@@ -32,7 +32,7 @@ def migrate(source, factory=None):
         for item in schema:
             if item['type'] == 'table':
                 remote.execute(item['sql'])
-        order = {'users':0,'projects':1,'tasks':2,'revisions':3,'work_calendars':4,'calendar_revisions':5,'import_batches':6}
+        order = {'users':0,'projects':1,'tasks':2,'revisions':3,'work_calendars':4,'calendar_revisions':5,'import_batches':6,'risks':7,'risk_revisions':8}
         counts = {}
         for name in sorted(tables, key=lambda n:(order.get(n, 10), n)):
             quoted = '"'+name.replace('"', '""')+'"'

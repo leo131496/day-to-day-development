@@ -157,6 +157,63 @@ class WorkspaceTest(unittest.TestCase):
             result = list(executor.map(update, [1,2]))
         self.assertEqual(sorted(result),[200,409])
 
+    def new_risk(self, **fields):
+        return {'id':'R-TEST', 'title':'接口交付延期', 'description':'外部接口未按计划交付，影响联调排期',
+                'category':'进度与交付', 'owner':'张三', 'probability':3, 'impact':2, 'status':'已识别',
+                'response':'明确接口负责人并约定替代方案', 'identifiedAt':'2026-10-28', 'due':'2026-11-05', **fields}
+
+    def test_risk_crud_history_backup_and_persistence(self):
+        project,_=self.create();base='/api/projects/'+project['id']
+        code,data=self.request(base+'/risks','POST',self.new_risk(linkedTaskId='T-001'))
+        self.assertEqual(code,201,data);risk=data['risk']
+        # Repeating a creation after a dropped response cannot duplicate a risk.
+        self.assertEqual(self.request(base+'/risks','POST',risk)[0],200)
+        self.assertEqual(len(self.request(base+'/risks')[1]['risks']),1)
+        code,data=self.request(base+'/risks/'+risk['id'],'PUT',{**risk,'status':'处理中'})
+        self.assertEqual(code,200,data);updated=data['risk']
+        self.assertEqual(self.request(base+'/risks/'+risk['id'],'PUT',risk)[0],409)
+        self.assertEqual(self.request(base+'/risks/'+risk['id'],'PUT',{**updated,'status':'已关闭'})[0],400)
+        code,data=self.request(base+'/risks/'+risk['id'],'PUT',{**updated,'status':'已关闭','resolution':'已完成接口交付并通过联调','closedAt':'2026-11-02'})
+        self.assertEqual(code,200,data);closed=data['risk']
+        code,data=self.request(base+'/risks/'+risk['id']+'/archive','POST',{'version':closed['version'],'archived':True})
+        self.assertEqual(code,200,data);self.assertTrue(data['risk']['archived'])
+        self.assertEqual(self.request(base+'/risks/'+risk['id'],'PUT',data['risk'])[0],409)
+        code,data=self.request(base+'/risks/'+risk['id']+'/archive','POST',{'version':data['risk']['version'],'archived':False})
+        self.assertEqual(code,200,data);self.assertFalse(data['risk']['archived'])
+        self.assertEqual(len(self.request(base+'/risks/'+risk['id']+'/history')[1]['history']),5)
+        reopened=type(self.http.store)(self.http.store.directory)
+        snapshot=reopened.snapshot(project['id'])
+        self.assertEqual(snapshot['risks'][0]['resolution'],'已完成接口交付并通过联调')
+        self.assertEqual(snapshot['risks'][0],self.request(base+'/export')[1]['risks'][0])
+        with sqlite3.connect(reopened.backup()) as backup:
+            self.assertEqual(backup.execute('SELECT COUNT(*) FROM risks WHERE project_id=?',(project['id'],)).fetchone()[0],1)
+            self.assertEqual(backup.execute('SELECT COUNT(*) FROM risk_revisions WHERE project_id=?',(project['id'],)).fetchone()[0],5)
+
+    def test_risk_validation_isolation_and_atomic_restore(self):
+        project,_=self.create();other,_=self.create();base='/api/projects/'+project['id']
+        for change in [{'probability':4},{'impact':True},{'description':''},{'due':'2026-10-01'},
+                       {'linkedTaskId':'not-in-project'},{'identifiedAt':'bad-date'}]:
+            self.assertEqual(self.request(base+'/risks','POST',self.new_risk(**change))[0],400)
+        code,data=self.request(base+'/risks','POST',self.new_risk())
+        self.assertEqual(code,201,data);risk=data['risk']
+        self.assertEqual(self.request(base+'/risks','POST',self.new_risk(title='重复编号'))[0],409)
+        self.assertEqual(self.request('/api/projects/'+other['id']+'/risks')[1]['risks'],[])
+        task=self.request(base)[1]['tasks'][0]
+        payload={'tasks':[{**task,'owner':'不应部分提交'}],'versions':{task['id']:task['version']},
+                 'risks':[{**risk,'response':'恢复应对方案'}],'riskVersions':{risk['id']:0}}
+        self.assertEqual(self.request(base+'/import','POST',payload)[0],409)
+        self.assertEqual(self.request(base)[1]['tasks'][0]['owner'],task['owner'])
+        payload['riskVersions'][risk['id']]=risk['version']
+        self.assertEqual(self.request(base+'/import','POST',payload)[0],200)
+        self.assertEqual(self.request(base)[1]['risks'][0]['response'],'恢复应对方案')
+        self.assertEqual(self.request(base+'/import','POST',{'tasks':[],'versions':{},'risks':[self.new_risk(id='R-ONLY')],'riskVersions':{}})[0],200)
+        member='risk.'+project['id']
+        self.assertEqual(self.request('/api/register','POST',{'username':member,'password':'risk-member-password-2026'})[0],201)
+        _,login=self.request('/api/login','POST',{'username':member,'password':'risk-member-password-2026'});self.csrf=login['csrf']
+        for path,method,body in [(base+'/risks','GET',None),(base+'/risks','POST',self.new_risk()),
+                                 (base+'/risks/R-TEST','PUT',risk),(base+'/risks/R-TEST/history','GET',None)]:
+            self.assertEqual(self.request(path,method,body)[0],404)
+
     def test_security_validation_and_task_creation(self):
         project, tasks = self.create()
         base = '/api/projects/'+project['id']
