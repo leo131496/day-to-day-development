@@ -2,7 +2,7 @@
 
 轻量的多项目管理应用：从项目内容生成工作清单，统一维护责任分工、排期工时、进度、风险及交付验收。内置海康 × 致趣项目原有的 50 项计划；本机使用 Python 标准库 + SQLite，无须安装第三方运行依赖；免费云部署使用校验过的官方 Turso 驱动。
 
-公开访问入口：[序 · 项目工作台](https://leo131496.github.io/day-to-day-development/)。默认免费方案为 **GitHub Pages + Render Free + Turso Free 云数据库**，不购买实例、磁盘或付费数据库；需要分别登录免费账号授权配置。云端发布前显示“待发布”，完成真实发布、数据迁移和检查后连接正式网址。免费服务有休眠和配额限制。步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+公开访问入口：[序 · 项目工作台](https://leo131496.github.io/day-to-day-development/)。免绑卡部署方案为 **GitHub Pages + Northflank Sandbox + Turso Free 云数据库**。Northflank 官方定价页当前标注 Sandbox 为 Free、No card needed；应用发布仍需账号授权及真实构建验证。此前 Render Blueprint 流程在当前账号要求银行卡验证，已停止作为默认入口。云端应用尚未发布时显示“待发布”，完成真实发布和检查后才连接正式网址。步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 
 ## 已实现
 
@@ -166,7 +166,9 @@ python3 -B server.py --data-dir /absolute/path/to/restored-data
 
 ## 部署到服务器
 
-GitHub 保存代码，GitHub Pages 托管 `docs/` 访问入口；`render.yaml` 默认部署 Render Free，数据直接写入 Turso Free。免费应用不购买磁盘，临时目录只缓存下载备份。详见 [DEPLOYMENT.md](DEPLOYMENT.md)。以下 Docker 方式用于本机或自有持久服务器。不要将数据库、密码或用户填写内容提交到仓库。
+GitHub 保存代码，GitHub Pages 托管 `docs/` 访问入口；免绑卡方案在 Northflank Sandbox 使用 `Dockerfile.cloud` 构建应用，数据直接写入 Turso Free。云容器只缓存下载备份，不购买磁盘。云镜像构建阶段运行独立测试，不连接真实数据库；部署仍需在实际账号中完成并验证。`render.yaml` 作为可选配置保留，Render 可能要求绑卡验证，不适用于当前免绑卡要求。详见 [DEPLOYMENT.md](DEPLOYMENT.md)。以下默认 Docker / Compose 方式继续用于本机或自有持久服务器。
+
+本机默认使用原有 `data/project.sqlite3`，云部署不会更改这个默认值，也不会自动读取私密云连接文件。本机和云端是分别存储的数据副本；迁移后新填写的内容不会自动双向同步，上线前须再次核对差异。不要将数据库、密码或用户填写内容提交到仓库。
 
 Docker Compose：
 
@@ -193,7 +195,7 @@ docker compose exec web cat /data/首次登录密码.txt
 | `BOARD_HOST` | `127.0.0.1` | 监听地址 |
 | `PORT` | `8765` | 端口 |
 | `BOARD_PASSWORD` | 自动生成 | 仅首次初始化管理员密码使用 |
-| `BOARD_ORIGIN` | 当前 HTTP 来源 | HTTPS 部署时填写公开来源 |
+| `BOARD_ORIGIN` | 当前来源 | 可显式固定公开来源；`BOARD_COOKIE_SECURE=1` 时默认按当前 Host 的 HTTPS 来源校验 |
 | `BOARD_COOKIE_SECURE` | `0` | HTTPS 部署设置为 `1` |
 | `RENDER_EXTERNAL_URL` | 云平台提供 | Render 上未手动配置 `BOARD_ORIGIN` 时，自动用于 HTTPS 来源校验 |
 | `BOARD_DATABASE_MODE` | `sqlite` | 免费云部署固定为 `turso`，连接失败不会降级为本机数据库 |
@@ -225,7 +227,8 @@ seed/project.json     海康项目原始 50 项任务及来源
 seed/cn-holidays.json 中国大陆 2025、2026 年官方放假 / 补班安排及来源
 tests/                API 和浏览器集成验证
 compose.yaml          单实例持久化部署
-render.yaml           Render Free 与独立 Turso Free 数据库配置
+Dockerfile.cloud      Northflank Sandbox 与独立 Turso Free 云数据库
+render.yaml           可选 Render 配置；可能要求银行卡验证
 cloud_store.py        云数据库事务、完整快照和安全失败处理
 requirements-cloud.txt 云端驱动固定版本与文件校验
 docs/                 GitHub Pages 访问入口和发布状态，不含业务数据

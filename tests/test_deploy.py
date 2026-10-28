@@ -13,6 +13,26 @@ from scripts.prepare_migration import prepare
 
 
 class DeploymentTest(unittest.TestCase):
+    def test_secure_cloud_origin_and_local_http_origin(self):
+        handler = object.__new__(server.Handler)
+        handler.headers = {'Origin':'https://workspace.example.code.run','Host':'workspace.example.code.run',
+                           'X-Requested-With':'ProjectBoard'}
+        with patch.dict(os.environ, {'BOARD_COOKIE_SECURE':'1'}, clear=True):
+            handler.check_origin()
+            handler.headers['Origin'] = 'http://workspace.example.code.run'
+            with self.assertRaises(server.APIError):
+                handler.check_origin()
+            handler.headers['Origin'] = 'https://other.example.code.run'
+            with self.assertRaises(server.APIError):
+                handler.check_origin()
+        handler.headers = {'Origin':'http://127.0.0.1:8765','Host':'127.0.0.1:8765',
+                           'X-Requested-With':'ProjectBoard'}
+        with patch.dict(os.environ, {}, clear=True):
+            handler.check_origin()
+            handler.headers['Origin'] = 'https://127.0.0.1:8765'
+            with self.assertRaises(server.APIError):
+                handler.check_origin()
+
     def test_render_https_origin_and_explicit_domain_override(self):
         handler = object.__new__(server.Handler)
         handler.headers = {'Origin':'https://project-space.onrender.com','Host':'project-space.onrender.com',

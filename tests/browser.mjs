@@ -12,7 +12,9 @@ const base='http://127.0.0.1:8766',password='browser-test-password-2026';
 await mkdir(path.join(root,'test-results'),{recursive:true});
 let service,browser,logs='';
 async function start(){
-  service=spawn('python3',['-B','server.py','--port','8766','--data-dir',data],{cwd:root,env:{...process.env,BOARD_PASSWORD:password},stdio:['ignore','pipe','pipe']});
+  const environment={...process.env,BOARD_PASSWORD:password,BOARD_DATABASE_MODE:'sqlite'};
+  for(const key of ['BOARD_ORIGIN','RENDER_EXTERNAL_URL','BOARD_COOKIE_SECURE','BOARD_DATA_DIR','TURSO_DATABASE_URL','TURSO_AUTH_TOKEN'])delete environment[key];
+  service=spawn('python3',['-B','server.py','--port','8766','--data-dir',data],{cwd:root,env:environment,stdio:['ignore','pipe','pipe']});
   service.stdout.on('data',v=>logs+=v);service.stderr.on('data',v=>logs+=v);
   for(let i=0;i<80;i++){try{if((await fetch(base+'/api/health')).ok)return;}catch{}await new Promise(r=>setTimeout(r,100));}
   throw Error('Server did not start: '+logs);

@@ -1,86 +1,96 @@
-# 免费发布项目工作台
+# 免费、免绑卡发布项目工作台
 
-当前默认方案：**GitHub Pages 免费访问入口 + Render Free 应用服务 + Turso Free 云数据库**。不创建付费实例、付费磁盘或付费数据库。
+默认方案：**GitHub Pages 访问入口 + Northflank Sandbox 应用 + Turso Free 数据库**。本机继续使用 SQLite。
 
-- 公开入口：<https://leo131496.github.io/day-to-day-development/>
-- 免费数据库：<https://turso.tech/>
-- 免费应用发布：<https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2Fleo131496%2Fday-to-day-development>
-- 官方套餐与配额：<https://turso.tech/pricing>、<https://render.com/docs/free>
+**当前业务网站尚未完成发布。** GitHub 入口可访问、云数据库已完成迁移，不代表公网登录和填写功能已上线。原 Render Blueprint 流程在当前账号弹出银行卡验证，已暂停，不填写银行卡或确认预授权。
 
-入口显示“待发布”时，完整业务系统尚未上线。云平台账号需要由使用者注册、登录并授权；不需要把数据库公开或上传 GitHub。
+2026-10-28 核对的 Northflank [官方定价页](https://northflank.com/pricing)标注 Sandbox 为 **Free / No card needed**，包含有限数量的服务和免费资源。新的应用托管仍需账号授权、实际构建和联调；不能把官方免费说明当作本项目已上线的证据。
 
-## 1. 创建免费数据库
+## 1. 本机环境继续可用
 
-在 Turso 注册 / 登录，选择 **Free（$0）**，创建独立的项目数据库。在数据库设置中取得数据库 URL（形如 `turso://数据库名-组织名.turso.io`）和具有读写权限的 Auth Token。
+本机仍执行：
 
-Turso 官方页面当前显示 Free 无需信用卡，包含 5GB 存储、每月 5 亿行读取及 1000 万行写入。配额包含业务数据、索引和备份，以平台控制台最新规则为准。达到免费配额可能停止服务，不开通付费套餐或付费超额使用。
+```bash
+python3 -B server.py --port 8765
+```
 
-应用使用官方 `turso-serverless` 驱动直接提交云数据库事务；不通过临时 SQLite 文件或稍后同步来保存业务数据。连接失败、令牌失效或配额不足时明确报错，不切换本机存储。驱动版本和哈希固定在 `requirements-cloud.txt`；云端需要 Python 3.10+，本机 SQLite 版本继续支持原 Python 环境。
+访问 <http://127.0.0.1:8765>，Mac 也可双击 `开始使用.command`。默认数据为 `data/project.sqlite3`，沿用原账号、密码和填写记录。默认 `Dockerfile` / Compose 仍使用持久 SQLite 卷；不要删除原库或卷。
 
-接入代码已用官方驱动连接本机 SQL-over-HTTP 模拟服务验证事务、重启持久性及备份恢复；真实 Turso 数据库仍需在账号授权后联调，不能把模拟测试当作真实服务已上线。
+云部署单独使用 `Dockerfile.cloud`，固定 `BOARD_DATABASE_MODE=turso`。私密云连接文件不会被本机启动器自动读取，也不会进入 GitHub 或镜像。自动测试使用独立临时数据库，浏览器测试会移除云连接配置。
 
-## 2. 先迁移本机记录，再发布应用
+本机 SQLite 与云端 Turso 是不同的数据副本，迁移后不会自动双向同步。正式切换入口前再次核对迁移后的本机填写变化，不能用旧备份覆盖任一端的新记录。
 
-若沿用本机项目、账号、密码和历史，先将完整备份迁移到**空的 Turso 数据库**，不要先启动应用填入新数据后再覆盖。
+## 2. 免费云端配置
 
-本机生成一致的私密备份，可在本机服务运行时执行：
+- Northflank 免费账号：<https://app.northflank.com/signup>
+- 官方套餐说明：<https://northflank.com/pricing>
+- 官方部署说明：<https://northflank.com/docs/v1/application/getting-started/build-and-deploy-your-code>
+- Turso Free 套餐：<https://turso.tech/pricing>
+
+登录 Northflank，选择 **Sandbox 免费套餐**，运行位置使用 **Northflank Cloud**。免费计划中的 BYOC 指连接自有云，其云资源可能另行计费，不用于本方案。若实际账号要求绑卡或升级，暂停创建，不输入支付资料。
+
+创建项目（例如 `project-plan`），在项目中创建可同时构建和部署的 **Combined service**：
+
+| 设置 | 内容 |
+| --- | --- |
+| GitHub 仓库 | `leo131496/day-to-day-development` |
+| 分支 | `main` |
+| 构建方式 | Dockerfile |
+| Dockerfile path | `Dockerfile.cloud` |
+| Build context | 仓库根目录 |
+| 资源和实例 | Sandbox 包含的免费规格，1 个实例 |
+| 公开端口 | `8765`，HTTP，Public |
+| 健康检查 | HTTP `GET /api/health`，成功状态 200 |
+
+默认 `Dockerfile` 是本机持久 SQLite 版本，云应用须使用 `Dockerfile.cloud`。云镜像先安装哈希校验的官方驱动，并运行隔离测试，通过后才生成运行镜像；运行镜像不包含测试、Git、密码、数据库或私密备份。
+
+将本机私密的 `data/northflank-environment.env` 中三项填到 **运行时**环境变量 / Secrets，而非构建参数：
+
+| 变量 | 内容 |
+| --- | --- |
+| `TURSO_DATABASE_URL` | 已迁移的 Turso 数据库完整 URL |
+| `TURSO_AUTH_TOKEN` | 同一个数据库的读写令牌 |
+| `BOARD_PASSWORD` | 至少 12 位的初始化密码；迁移后不会覆盖原密码 |
+
+镜像已设置 `PORT=8765`、`BOARD_HOST=0.0.0.0`、`BOARD_DATABASE_MODE=turso`、`BOARD_COOKIE_SECURE=1` 和临时备份缓存目录，无需购买或挂载持久磁盘。公开访问使用平台生成的 HTTPS 域名。
+
+HTTPS 默认按 Secure Cookie 设置和当前 Host 校验来源。使用固定域名时可设置 `BOARD_ORIGIN=https://实际域名`，不带末尾斜线。未配置 Turso、令牌失效或达到免费配额时，应用会报错，不降级到本机存储。
+
+## 3. 迁移与数据保护
+
+**已迁移的数据库不重复初始化或导入。** 本项目原项目、50 条工作项、50 条历史及账号已迁移至 Turso，并核对完整内容。本机原数据和私密备份均保留。登录沿用当前账号密码；初始密码文件可能已经过期。
+
+对于尚未迁移的新安装，先生成一致备份，再向空数据库迁移（Python 3.10+）：
 
 ```bash
 python3 -B scripts/prepare_migration.py --output data/migration/project-cloud.sqlite3
-```
-
-已经准备的迁移文件可以直接使用；不覆盖旧备份。文件包含私密业务数据、密码哈希及恢复码哈希，禁止上传公开 GitHub、Pages、Releases 或公开分享链接。
-
-在本机 Python 3.10+ 环境安装云驱动，并在私密环境变量中配置 `TURSO_DATABASE_URL`、`TURSO_AUTH_TOKEN`。令牌不要放进公开 issue、提交或部署日志。执行：
-
-```bash
 python -m pip install --require-hashes -r requirements-cloud.txt
 python -B scripts/migrate_turso.py --source data/migration/project-cloud.sqlite3
 ```
 
-迁移仅接受空数据库，目标已有表时整批停止。迁移在一个事务内创建结构、复制记录、核对数量和关联；保留账号、工作项、历史、日历和导入预览，清除会话及限流记录。本机原库不变。若中断后无法确认提交，先检查云端状态，不盲目重复。
+运行迁移前通过私密环境变量配置 Turso URL 和读写令牌。迁移仅接受空数据库，整个事务核对数量和关联；目标已有数据时停止，不覆盖。迁移必须在新云库首次启动应用前完成。本机源文件不变。
 
-若不需要本机填写，可直接使用空数据库发布：应用初始化原始计划和新管理员。**初始化种子不等于迁移现有填写内容。**
+已使用真实 Turso 验证事务迁移、数据完整性、全新缓存读取及云快照恢复；Northflank 托管环境仍待联调。私密备份包含业务内容和密码哈希，不上传到公开 GitHub、Pages、Releases 或分享链接。
 
-## 3. 发布免费应用
+应用启动、每小时、导入前及正常停止会做完整备份，最近 8 份压缩快照保存在 Turso 内并校验、去重；临时磁盘仅用于下载缓存。管理员定期从 **账号设置 → 下载完整备份** 另存私人电脑或独立存储。
 
-打开 Render 发布链接，登录并授权当前仓库，核对 `render.yaml`：
+同库快照不能抵御整个云数据库或账号被删除。全库恢复使用新的空数据库，保留旧库和备份供回退。免费平台均有资源和配额限制，不升级、不启用付费超额，也不承诺永久免费或数据绝不丢失。
 
-- 实例为 `plan: free`，单实例，不添加磁盘。
-- `BOARD_DATABASE_MODE=turso`，直接使用云数据库。
-- `BOARD_DATA_DIR=/tmp/project-space-cache` 只放下载备份缓存，不放业务数据库。
-- 将 Turso URL 和读写 Token 填入 Render 环境变量。
-- 设置至少 12 个字符的 `BOARD_PASSWORD`，仅在空库首次创建管理员时使用。迁移后沿用原账号密码，不被该变量重置。
+不同账号当前拥有独立项目空间。上线后同事和客户可注册自己的账号；共同编辑同一项目仍需要增加邀请及成员权限，不应共享管理员密码。
 
-若平台要求升级或购买磁盘，先停止，不确认付费。正常免费配置无需购买磁盘，持久数据由 Turso Free 保存。
+## 4. 验证并接通入口
 
-构建阶段安装校验过的驱动并运行测试；通过后启动服务，检查 `/api/health`。缺少数据库配置时启动失败，避免把业务数据误写到免费服务临时磁盘。
+先检查实际构建、启动日志和公开健康接口，再验证登录、项目工作清单、保存、导入及重启持久性。只有这些检查通过才视为业务系统发布成功，不把 GitHub 推送成功当作应用上线。
 
-Render 提供 `PORT`、`RENDER_EXTERNAL_URL`，应用校验 HTTPS 来源并使用 Secure Cookie。可直接使用平台提供的 HTTPS 子域名，无需购买域名；自定义域名时再配置 `BOARD_ORIGIN` 与平台域名 / 证书。
-
-## 4. 免费限制与备份
-
-免费应用无人访问时可能休眠，首次打开需要等待唤醒；构建、运行时长、网络和数据库有配额，不提供付费服务的可用性保障。休眠、重新部署不会清除独立云数据库中已提交的记录。删除云数据库、关闭账号、误删或服务商政策变化仍会影响数据，不能承诺绝不丢失。
-
-云数据库中保留最近 **8 份**完整快照，按内容去重并压缩分块保存，覆盖项目、账号、历史、日历和导入记录；不递归包含其他快照。自动备份在启动、每小时、导入前及正常停止触发。备份失败时批量导入停止；已有记录保留，普通保存仍使用事务和逐项历史。
-
-云快照与业务数据位于同一个 Turso 数据库，不能抵御整个数据库或账号被删除。管理员请定期从 **账号设置 → 下载完整备份** 另存私人电脑或独立存储；其他账号无权导出全库。项目原有 JSON / CSV 导出保留。
-
-`cloud_store.restore_archive(store, backup_id, target)` 可校验并下载一个新的 SQLite 文件，不覆盖在线数据。全库恢复应迁移到新的空云数据库，再在维护窗口切换配置，保留原库供回退。
-
-## 5. 连接 GitHub 入口
-
-服务实际显示 Live 后，将真实 HTTPS 网址发回当前对话，核对账号、记录数量、历史、导入及重启持久性。检查完成后：
+拿到平台提供的真实 HTTPS 地址（通常为 `code.run` 子域名）后执行：
 
 ```bash
 python3 -B scripts/configure_public_url.py https://实际云端域名
 git add docs/config.json
-git commit -m "Connect verified free hosted workspace"
+git commit -m "Connect verified hosted workspace"
 git push origin main
 ```
 
-脚本先检查数据库健康接口，成功后设置入口。GitHub Pages 来源为 `main / docs`，仓库 About → Website 指向公开入口。入口不包含数据库 Token 或业务内容。
+脚本在健康接口返回 `{"ok":true}` 后才更新入口。Pages 来源为 `main / docs`，入口仅保存公开应用网址。未验证的地址不要填写。
 
-GitHub 推送触发 Render 自动部署；以平台测试、启动和健康检查结果判断更新是否成功，不能把推送成功当成网站已上线。单实例更新或免费服务唤醒可能短暂中断访问。
-
-不同账号目前使用独立项目空间。同事和客户上线后可注册；共同编辑同一个项目需要另外增加成员权限，不应共享管理员密码。
+`render.yaml` 仅作为其他使用者的可选 Render 配置保留；当前账号要求绑卡，免绑卡发布不继续走此路径。

@@ -1,7 +1,6 @@
 .git
 data
 backups
-tests
 test-results
 __pycache__
 .env

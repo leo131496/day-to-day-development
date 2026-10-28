@@ -1,4 +1,6 @@
-# Free web service, with all durable records in a separate Turso Free database.
+# Optional Render configuration; this account's Blueprint flow requires card verification.
+# The no-card deployment uses Dockerfile.cloud on Northflank Sandbox instead.
+# All durable records live in a separate Turso Free database.
 # /tmp is only a disposable backup cache. Missing cloud credentials abort startup.
 services:
   - type: web

@@ -28,8 +28,11 @@ try{
   await page.route('**/config.json',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({appUrl:'javascript:alert(1)'})}));
   await page.reload();await page.locator('#release-status').filter({hasText:'暂未就绪'}).waitFor();
   assert.equal(await page.locator('#enter-workspace').getAttribute('href'),null);
-  await page.goto(base+'/deploy.html');assert.ok((await page.locator('a.primary').getAttribute('href')).startsWith('https://render.com/deploy?repo='));
+  await page.goto(base+'/deploy.html');assert.equal(await page.locator('a.primary').getAttribute('href'),'https://app.northflank.com/signup');
   assert.match(await page.locator('.setup-callout').textContent(),/免费/);
+  assert.match(await page.locator('.setup-callout').textContent(),/No card needed/);
+  assert.match(await page.locator('.setup-callout').textContent(),/Render.*已暂停/);
+  assert.equal(await page.locator('a[href^="https://render.com/deploy"]').count(),0);
   assert.equal(await page.locator('a[href="https://turso.tech/"]').count(),1);
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
   await page.screenshot({path:path.join(root,'test-results/deploy-mobile.png'),fullPage:true});
