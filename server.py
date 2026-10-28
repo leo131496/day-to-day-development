@@ -400,7 +400,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, {'ok': True})
         if not path.startswith('/api/'):
             files = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/auth.css': 'auth.css',
-                     '/worklist.css': 'worklist.css', '/favicon.svg': 'favicon.svg'}
+                     '/worklist.css': 'worklist.css', '/dashboard.css': 'dashboard.css', '/dashboard.js': 'dashboard.js', '/favicon.svg': 'favicon.svg'}
             if method != 'GET' or path not in files:
                 raise APIError(404, '页面不存在')
             file = ROOT / 'static' / files[path]

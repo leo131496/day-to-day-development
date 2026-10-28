@@ -52,7 +52,7 @@ async function enter(){
   $('login').hidden=true;$('workspace').hidden=false;
   await loadProjects();
   const id=location.hash.slice(1);
-  if(id&&state.projects.some(p=>p.id===id&&!p.archived))await openProject(id);else home();
+  if(id&&state.projects.some(p=>p.id===id&&!p.archived))await openProject(id,false,new URLSearchParams(location.search).get('view')==='dashboard'?'dashboard':'list');else home();
 }
 $('login-form').onsubmit=async e=>{e.preventDefault();const button=e.submitter;button.disabled=true;$('login-error').textContent='';try{setSession(await post('/api/login',{username:$('username').value.trim(),password:$('password').value}));$('password').value='';await enter();}catch(err){$('login-error').textContent=err.message;}finally{button.disabled=false;}};
 $('logout').onclick=async()=>{try{await post('/api/logout');showLogin();}catch(err){toast(err.message);}};
@@ -105,6 +105,7 @@ function renderSidebar(){
 }
 function stat(label,value,unit,foot,icon){return `<div class="stat"><div class="stat-label">${label}<span class="stat-icon">${icon}</span></div><div class="stat-number">${value}<small>${unit}</small></div><div class="stat-foot">${foot}</div></div>`;}
 function home(trash=false){
+  $('main').classList.remove('dashboard-mode');const url=new URL(location.href);url.searchParams.delete('view');window.history.replaceState(null,'',url);
   state.load++;state.page=trash?'trash':'home';state.project=null;location.hash='';closeNav();renderSidebar();
   $('breadcrumb').innerHTML='工作空间 <span>/</span> '+(trash?'项目回收站':'项目总览');
   const projects=state.projects.filter(p=>p.archived===trash),active=state.projects.filter(p=>!p.archived);
@@ -112,12 +113,12 @@ function home(trash=false){
   const portfolioProgress=portfolioWeighted?active.reduce((sum,p)=>sum+p.progress*p.plannedHours,0)/portfolioHours:active.reduce((sum,p)=>sum+p.progress*p.total,0)/Math.max(1,portfolioCount);
   $('main').innerHTML=`<section class="page-heading"><div><div class="eyebrow">YOUR WORK, IN ORDER</div><h1>${trash?'项目回收站':'每个计划，都向前一步。'}</h1><p>${trash?'项目及其任务、历史记录均保留，可随时恢复。':'从想法到交付，清晰掌握每个项目的进展。'}</p></div><div class="heading-actions">${trash?'':'<button class="primary" data-action="create-project">＋ 新建项目</button>'}<button data-action="reload-home">↻ 刷新</button></div></section>
   ${trash?'':`<div class="stats">${stat('全部项目',active.length,'个','一个空间，连接所有项目','▦')}${stat('累计完成',active.reduce((s,p)=>s+p.completed,0),'项','每一份进展，都值得记录','✓')}${stat('待推进任务',active.reduce((s,p)=>s+p.total-p.completed,0),'项','按项目查看责任人与待办','◷')}${stat('整体完成率',hoursText(portfolioProgress),'%',portfolioWeighted?'按计划工时汇总':'按各项目任务进度汇总','↗')}</div>`}
-  <div class="section-head"><h2>${trash?'已删除的项目':'项目空间'} <small> / ${projects.length} 个项目</small></h2><small>${today().replaceAll('-',' / ')}</small></div><div class="project-grid">${projects.map(p=>`<article class="project-card"><div class="project-card-top"><span class="project-symbol">▧</span>${tag(trash?'已移入回收站':p.total&&p.total===p.completed?'已完成':'推进中',trash?'':'purple')}</div><h3>${esc(p.name)}</h3><p>${esc(p.description||p.content||'添加项目内容，生成你的第一份任务计划。')}</p><div class="project-progress"><div class="progress-caption"><span>项目完成进度</span><span>${p.completed} / ${p.total} 项完成 · ${hoursText(p.progress)}%</span></div>${track(p.progress)}</div><div class="project-card-bottom"><span>${esc(p.owner||'待指定负责人')}</span>${trash?`<button class="link" data-restore-project="${p.id}">恢复项目 ↗</button>`:`<button class="link" data-project="${p.id}">进入项目 ↗</button>`}</div></article>`).join('')}${trash?'':`<button class="create-card" data-action="create-project"><span>＋</span><strong>开始一个新项目</strong><small>填写项目内容，生成工作清单与排期</small></button>`}</div>${trash&&!projects.length?'<div class="empty"><h3>回收站是空的</h3>删除的项目会保留在这里。</div>':''}`;
+  <div class="section-head"><h2>${trash?'已删除的项目':'项目空间'} <small> / ${projects.length} 个项目</small></h2><small>${today().replaceAll('-',' / ')}</small></div><div class="project-grid">${projects.map(p=>`<article class="project-card"><div class="project-card-top"><span class="project-symbol">▧</span>${tag(trash?'已移入回收站':p.total&&p.total===p.completed?'已完成':'推进中',trash?'':'purple')}</div><h3>${esc(p.name)}</h3><p>${esc(p.description||p.content||'添加项目内容，生成你的第一份任务计划。')}</p><div class="project-progress"><div class="progress-caption"><span>项目完成进度</span><span>${p.completed} / ${p.total} 项完成 · ${hoursText(p.progress)}%</span></div>${track(p.progress)}</div><div class="project-card-bottom"><span>${esc(p.owner||'待指定负责人')}</span>${trash?`<button class="link" data-restore-project="${p.id}">恢复项目 ↗</button>`:`<div class="project-entry-actions"><button class="link" data-dashboard-project="${p.id}">可视化看板</button><button class="link" data-project="${p.id}">进入项目 ↗</button></div>`}</div></article>`).join('')}${trash?'':`<button class="create-card" data-action="create-project"><span>＋</span><strong>开始一个新项目</strong><small>填写项目内容，生成工作清单与排期</small></button>`}</div>${trash&&!projects.length?'<div class="empty"><h3>回收站是空的</h3>删除的项目会保留在这里。</div>':''}`;
   $('backup-status').textContent='项目数据保存在服务器数据库中';
 }
-async function openProject(id,preserve=false){
+async function openProject(id,preserve=false,initialView='list'){
   const ticket=++state.load;closeNav();
-  if(!preserve){state.filters=defaultFilters();state.archived=false;state.view='list';}
+  if(!preserve){state.filters=defaultFilters();state.archived=false;state.view=initialView;}
   if(!preserve)$('main').innerHTML='<div class="loading">正在打开项目空间…</div>';
   try{
     const data=await api('/api/projects/'+id);if(ticket!==state.load)return;
@@ -127,17 +128,19 @@ async function openProject(id,preserve=false){
 }
 function activeTasks(){return state.tasks.filter(t=>!t.archived);}
 function rank(t){return done(t)?9:overdue(t)||['受阻','已延期'].includes(t.status)?1:near(t)?2:3;}
-function filtered(){const f=state.filters,q=f.q.toLowerCase();return state.tasks.filter(t=>t.archived===state.archived&&(!q||[t.id,t.title,t.content,t.owner,t.collaborator,t.nextAction,t.stage,t.blocker].join(' ').toLowerCase().includes(q))&&(!f.stage||t.stage===f.stage)&&(!f.owner||t.owner===f.owner)&&(!f.status||t.status===f.status)&&(f.focus==='all'||f.focus==='overdue'&&overdue(t)||f.focus==='near'&&near(t)||f.focus==='open'&&!done(t)||f.focus==='blocked'&&['受阻','已延期'].includes(t.status))).sort((a,b)=>(f.sort==='end'?(a.end||'9999').localeCompare(b.end||'9999'):f.sort==='hours'?(b.workload?.hours??-1)-(a.workload?.hours??-1):f.sort==='progress'?(b.progress??-1)-(a.progress??-1):f.sort==='attention'?rank(a)-rank(b):0)||a.id.localeCompare(b.id,undefined,{numeric:true}));}
+function filtered(){const f=state.filters,q=f.q.toLowerCase();return state.tasks.filter(t=>t.archived===state.archived&&(!q||[t.id,t.title,t.content,t.owner,t.collaborator,t.nextAction,t.stage,t.blocker].join(' ').toLowerCase().includes(q))&&(!f.stage||t.stage===f.stage)&&(!f.owner||t.owner===f.owner)&&(!f.status||t.status===f.status)&&(f.focus==='all'||f.focus==='overdue'&&overdue(t)||f.focus==='near'&&near(t)||f.focus==='open'&&!done(t)||f.focus==='unassigned'&&!t.owner||f.focus==='blocked'&&['受阻','已延期'].includes(t.status))).sort((a,b)=>(f.sort==='end'?(a.end||'9999').localeCompare(b.end||'9999'):f.sort==='hours'?(b.workload?.hours??-1)-(a.workload?.hours??-1):f.sort==='progress'?(b.progress??-1)-(a.progress??-1):f.sort==='attention'?rank(a)-rank(b):0)||a.id.localeCompare(b.id,undefined,{numeric:true}));}
 function options(values,current,first){return `<option value="">${first}</option>`+values.map(v=>`<option ${current===v?'selected':''} value="${esc(v)}">${esc(v)}</option>`).join('');}
 function renderProject(){
+  $('main').classList.toggle('dashboard-mode',state.view==='dashboard'&&!state.archived);
+  const url=new URL(location.href);if(state.view==='dashboard')url.searchParams.set('view','dashboard');else url.searchParams.delete('view');window.history.replaceState(null,'',url);
   const p=state.project,tasks=activeTasks(),m=metrics(tasks),missing=tasks.filter(t=>!t.owner||!t.start||!t.end).length;
   $('breadcrumb').innerHTML='工作空间 <span>/</span> '+esc(p.name);
   $('main').innerHTML=`<section class="page-heading"><div><div class="eyebrow">PROJECT DELIVERY · WORK REGISTER</div><h1>${esc(p.name)}</h1><p>${esc(p.description||'明确工作范围、责任分工和计划投入，持续跟踪交付进展。')}</p></div><div class="heading-actions"><button data-action="edit-project">项目信息</button><button data-action="calendar">工作日历</button><button data-action="generate">✧ 生成工作项</button><button class="primary" data-action="new-task">＋ 新增工作项</button></div></section>
   ${state.backup?.error?'<p class="backup-warning">最近一次自动备份失败，请检查服务器存储空间。当前数据库仍可使用，请及时导出备份。</p>':''}
   <div class="stats work-stats">${stat('工作清单',tasks.length,'项',tasks.filter(done).length+' 项已完成 · '+missing+' 项待补责任或排期','▦')}${stat('计划工时',hoursText(m.hours),'H','已计算 '+m.ready+'/'+m.total+' 项 · 每工作日 8H','◷')}${stat('整体进度',hoursText(m.percent),'%',progressRule(m),'↗')}${stat('进度关注',tasks.filter(overdue).length,'项逾期',tasks.filter(near).length+' 项 7 天内到期','⚑')}</div>
   <div class="calendar-policy"><span class="calendar-policy-icon">▦</span><div><strong>中国大陆工作日历 · 8H / 工作日</strong><p>起止日期均计入；扣除周末及法定放假，计入调休补班。${m.unpriced?'有 '+m.unpriced+' 项尚不能计算工时，请补齐日期或年度日历。':'当前已排期工作项均已按日历计算。'}</p></div><button class="link" data-action="calendar">查看计算依据 ↗</button></div>
-  <div class="viewbar"><button class="viewtab ${state.view==='list'?'active':''}" data-view="list">☷ 项目工作清单</button><button class="viewtab ${state.view==='board'?'active':''}" data-view="board">▥ 状态看板</button><button class="viewtab ${state.view==='overview'?'active':''}" data-view="overview">◴ 进度与工时</button><span class="viewcount">${state.archived||state.tasks.filter(t=>t.archived).length?`<button class="link" data-action="toggle-archive">${state.archived?'返回工作清单':'工作项回收站'}</button>`:'责任清晰 · 过程留痕'}</span></div>
-  <div class="filters"><input id="search" aria-label="搜索任务" placeholder="⌕ 搜索任务、内容或负责人…" value="${esc(state.filters.q)}"><select id="filter-stage" aria-label="筛选阶段">${options([...new Set(tasks.map(t=>t.stage))],state.filters.stage,'全部项目阶段')}</select><select id="filter-owner" aria-label="筛选负责人">${options([...new Set(tasks.map(t=>t.owner).filter(Boolean))],state.filters.owner,'全部负责人')}</select><select id="filter-focus" aria-label="筛选任务提醒">${[['all','全部任务'],['open','未完成'],['overdue','已逾期'],['near','7 天内到期'],['blocked','受阻 / 延期']].map(([v,l])=>`<option value="${v}" ${state.filters.focus===v?'selected':''}>${l}</option>`).join('')}</select><button class="refresh" data-action="refresh-project">↻ 刷新数据</button></div>
+  <div class="viewbar"><button class="viewtab ${state.view==='list'?'active':''}" data-view="list">☷ 项目工作清单</button><button class="viewtab ${state.view==='dashboard'?'active':''}" data-view="dashboard">◉ 可视化看板</button><button class="viewtab ${state.view==='board'?'active':''}" data-view="board">▥ 状态看板</button><button class="viewtab ${state.view==='overview'?'active':''}" data-view="overview">◴ 进度与工时</button><span class="viewcount">${state.archived||state.tasks.filter(t=>t.archived).length?`<button class="link" data-action="toggle-archive">${state.archived?'返回工作清单':'工作项回收站'}</button>`:'责任清晰 · 过程留痕'}</span></div>
+  <div class="filters"><input id="search" aria-label="搜索任务" placeholder="⌕ 搜索任务、内容或负责人…" value="${esc(state.filters.q)}"><select id="filter-stage" aria-label="筛选阶段">${options([...new Set(tasks.map(t=>t.stage))],state.filters.stage,'全部项目阶段')}</select><select id="filter-owner" aria-label="筛选负责人">${options([...new Set(tasks.map(t=>t.owner).filter(Boolean))],state.filters.owner,'全部负责人')}</select><select id="filter-focus" aria-label="筛选任务提醒">${[['all','全部任务'],['open','未完成'],['unassigned','负责人待定'],['overdue','已逾期'],['near','7 天内到期'],['blocked','受阻 / 延期']].map(([v,l])=>`<option value="${v}" ${state.filters.focus===v?'selected':''}>${l}</option>`).join('')}</select><button class="refresh" data-action="refresh-project">↻ 刷新数据</button></div>
   <div id="view-content"></div><div class="section-head"><small id="result-count"></small><div class="section-actions"><button data-action="export">导出备份</button><button data-action="csv">导出 CSV</button><button data-action="import">导入记录</button><button data-action="backup">立即备份</button><button class="danger" data-action="delete-project">删除项目</button></div></div><input type="file" id="import-file" accept=".json,.html" hidden>`;
   $('search').oninput=e=>{state.filters.q=e.target.value;renderView();};
   $('filter-focus').insertAdjacentHTML('beforebegin',`<select id="filter-status" aria-label="筛选当前状态">${options(statuses,state.filters.status,'全部状态')}</select>`);
@@ -175,6 +178,8 @@ function renderView(){
     content.innerHTML='<div class="board">'+lanes.map(([name,group])=>{const tasks=list.filter(t=>group.includes(t.status));return `<section class="lane"><div class="lane-head"><span class="lane-title"><span class="lane-dot"></span>${name}</span><strong>${tasks.length}</strong></div>${tasks.length?tasks.map(card).join(''):'<div class="empty-lane">这里还没有任务</div>'}<button class="lane-add" data-new-status="${group[0]}">＋ 添加任务</button></section>`;}).join('')+'</div>';
   }else if(state.view==='list'){
     content.innerHTML=renderWorkList(list);
+  }else if(state.view==='dashboard'){
+    content.innerHTML=ProjectDashboard.render(list,{allTasks:activeTasks(),metrics,done,overdue,near,today,progressRule,filtered:Object.entries(state.filters).some(([key,value])=>key!=='sort'&&value&&value!=='all')});
   }else{
     content.innerHTML=renderWorkOverview(list);
   }
@@ -261,7 +266,7 @@ async function saveTask(e){
   }finally{controls.forEach(el=>el.disabled=false);}
 }
 function taskSummary(task){return [['任务',task.title],['内容',task.content],['负责人',task.owner],['协作方',task.collaborator],['优先级',task.priority],['阶段',task.stage],['状态',task.status],['完成率',task.progress===null?'未知':Math.round(task.progress*100)+'%'],['计划开始',task.start],['计划结束',task.end],['下一步',task.nextAction],['跟进日期',task.followup],['风险',task.blocker],['待决策',task.decision],['交付',task.evidence],['验收要点',task.criteria],['验收结论',task.acceptance],['实际完成',task.actualEnd]].map(([k,v])=>k+'：'+(v||'—')).join('\n');}
-async function history(){
+async function taskHistory(){
   try{const data=await api(projectPath('/tasks/'+editTask.id+'/history'));
     $('task-history').innerHTML=data.history.map(h=>`<div class="history-item"><div class="history-item-head"><strong>v${h.version} · ${esc(h.action)}</strong>${h.version===state.tasks.find(t=>t.id===editTask.id)?.version?tag('当前版本','purple'):`<button type="button" data-history-restore="${h.version}">恢复此版本</button>`}</div><p>${time(h.at)}</p><details><summary>查看版本内容</summary><pre>${esc(taskSummary(h.task))}</pre></details></div>`).join('');
   }catch(err){toast(err.message);}
@@ -346,6 +351,8 @@ async function importFile(e){
 async function action(name){
   switch(name){
     case 'calendar':return calendarEditor();
+    case 'reset-dashboard-filters':state.filters=defaultFilters();return renderProject();
+    case 'dashboard-list':state.view='list';return renderProject();
     case 'create-project':return projectEditor();case 'edit-project':return projectEditor('edit');case 'generate':return projectEditor('generate');case 'new-task':return openTask();
     case 'reload-home':await loadProjects();return home(state.page==='trash');
     case 'refresh-project':return openProject(state.project.id,true);
@@ -353,14 +360,24 @@ async function action(name){
     case 'export':return exportProject();case 'csv':return exportCSV();case 'import':return $('import-file').click();
     case 'backup':await post(projectPath('/backup'));toast('数据库完整备份已生成并通过完整性检查。');return openProject(state.project.id,true);
     case 'delete-project':return archiveProject(state.project.id);
-    case 'history':return history();case 'archive-task':return archiveTask(editTask.id);
+    case 'history':return taskHistory();case 'archive-task':return archiveTask(editTask.id);
     case 'discard-draft':if(!confirm('放弃这份未提交的草稿？'))return;draftRemove(editTask.key);taskDirty=false;$('editor').close();return openTask(editTask.isNew?undefined:editTask.id);
     case 'discard-project-draft':if(!confirm('放弃这份项目草稿？'))return;draftRemove(projectDraftKey());projectDirty=false;$('project-editor').close();return projectEditor(projectMode);
   }
 }
 document.addEventListener('click',async e=>{
+  const chart=e.target.closest('[data-dashboard-filter],[data-dashboard-task]');
+  if(chart){
+    if(chart.dataset.dashboardTask)return openTask(chart.dataset.dashboardTask);
+    const key=chart.dataset.dashboardFilter;if(!['owner','stage','status'].includes(key))return;
+    const value=chart.dataset.value||'';state.filters[key]=value;
+    if(key==='owner'){if(!value)state.filters.focus='unassigned';else if(state.filters.focus==='unassigned')state.filters.focus='all';}
+    renderProject();$('view-content').scrollIntoView({block:'start',behavior:'smooth'});return;
+  }
   const b=e.target.closest('button');if(!b)return;
   try{
+    if(b.dataset.dashboardProject)return await openProject(b.dataset.dashboardProject,false,'dashboard');
+    if(b.dataset.dashboardScroll)return $('view-content').querySelector('.dash-timeline')?.scrollBy({left:Number(b.dataset.dashboardScroll)*550,behavior:'smooth'});
     if(b.dataset.authMode)return authMode(b.dataset.authMode);
     if(b.dataset.togglePassword){const input=$(b.dataset.togglePassword),show=input.type==='password';input.type=show?'text':'password';b.textContent=show?'隐藏':'显示';b.setAttribute('aria-label',show?'隐藏密码':'显示密码');return;}
     if(b.dataset.project)return await openProject(b.dataset.project);
@@ -381,3 +398,5 @@ window.addEventListener('beforeunload',e=>{if(taskDirty||projectDirty||calendarD
 window.addEventListener('offline',()=>{$('connection').textContent='连接中断 · 请保留草稿';toast('网络已断开。填写会保留本机草稿，恢复连接后请重新保存到数据库。');});
 window.addEventListener('online',()=>{$('connection').innerHTML='<i class="small-dot"></i> 已连接';toast('网络已恢复，请重新保存尚未提交的填写。');});
 boot();
+
+document.addEventListener('keydown',e=>{if(!['Enter',' '].includes(e.key))return;const target=e.target.closest('svg [role=button]');if(target){e.preventDefault();target.dispatchEvent(new MouseEvent('click',{bubbles:true}));}});

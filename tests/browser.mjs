@@ -30,6 +30,29 @@ try{
   assert.match(await page.locator('.viewtab.active').textContent(),/项目工作清单/);
   for(const text of ['负责人','当前状态','开始日期','结束日期','工作日','计划工时','进度'])assert.ok((await page.locator('.work-table thead').textContent()).includes(text));
   await page.screenshot({path:path.join(root,'test-results/worklist-seed.png'),fullPage:true});
+  // Every visualization must reflect saved records, and browsing charts cannot mutate them.
+  const seedTasks=await page.evaluate(async()=>(await (await fetch('/api/projects/haikang')).json()).tasks);
+  await page.locator('[data-view="dashboard"]').click();
+  assert.equal(await page.locator('[data-dashboard-kpi="total"]').textContent(),'50项');
+  assert.equal(await page.locator('[data-dashboard-kpi="completed"]').textContent(),seedTasks.filter(t=>t.status==='已完成'&&t.progress===1).length+'项');
+  assert.equal(await page.locator('.dash-milestone').count(),seedTasks.filter(t=>t.end).length);
+  assert.equal(await page.locator('[data-gantt-row]').count(),seedTasks.filter(t=>t.start&&t.end).length);
+  await page.screenshot({path:path.join(root,'test-results/dashboard-seed.png'),fullPage:true});
+  assert.ok(await page.locator('.dash-gantt').textContent().then(text=>/2026\/\d{2}\/\d{2}/.test(text)),'Date axes must include years for cross-year schedules');
+  const firstStage=await page.locator('.dash-stage-legend button').first().getAttribute('data-value');
+  await page.locator('.dash-stage-legend button').first().click();
+  assert.equal(await page.locator('[data-dashboard-total]').getAttribute('data-dashboard-total'),String(seedTasks.filter(t=>t.stage===firstStage).length));
+  assert.equal(await page.locator('#filter-stage').inputValue(),firstStage);
+  await page.locator('.dash-actions [data-action="dashboard-list"]').click();assert.equal(await page.locator('[data-work-row]').count(),seedTasks.filter(t=>t.stage===firstStage).length);
+  await page.locator('[data-view="dashboard"]').click();
+  await page.locator('[data-action="reset-dashboard-filters"]').click();
+  await page.locator('.dash-status-chart [data-value="已完成"]').focus();await page.keyboard.press('Enter');
+  assert.equal(await page.locator('#filter-status').inputValue(),'已完成');
+  assert.equal(await page.locator('[data-dashboard-total]').getAttribute('data-dashboard-total'),String(seedTasks.filter(t=>t.status==='已完成').length));
+  await page.locator('[data-action="reset-dashboard-filters"]').click();await page.reload();
+  await page.locator('.project-dashboard').waitFor();assert.match(await page.locator('.viewtab.active').textContent(),/可视化看板/);
+  const seedAfter=await page.evaluate(async()=>(await (await fetch('/api/projects/haikang')).json()).tasks);
+  assert.deepEqual(seedAfter,seedTasks);
   await page.locator('[data-view="board"]').click();await page.locator('.task-card').first().waitFor();
   assert.equal(await page.locator('.task-card').count(),50);
   await page.screenshot({path:path.join(root,'test-results/board.png'),fullPage:true});
@@ -45,7 +68,10 @@ try{
   await page.screenshot({path:path.join(root,'test-results/generate.png'),fullPage:true});
   await page.locator('#save-project').click();await page.getByRole('heading',{name:'官网升级 · 集成验证',exact:true}).waitFor();
   const projectId=await page.evaluate(()=>location.hash.slice(1));
-  assert.equal(await page.locator('[data-work-row]').count(),3);await page.locator('[data-view="board"]').click();
+  assert.equal(await page.locator('[data-work-row]').count(),3);
+  await page.locator('[data-view="dashboard"]').click();assert.equal(await page.locator('[data-dashboard-total]').getAttribute('data-dashboard-total'),'3');
+  await page.locator('.dash-owner-buttons [data-value=""]').click();assert.equal(await page.locator('[data-dashboard-total]').getAttribute('data-dashboard-total'),'1');assert.equal(await page.locator('#filter-focus').inputValue(),'unassigned');
+  await page.locator('[data-action="reset-dashboard-filters"]').click();await page.locator('[data-view="board"]').click();
   assert.equal(await page.locator('.task-card').count(),3);
   await page.locator('[data-task="T-001"]').click();
   await page.locator('[name="nextAction"]').fill('已完成访谈并整理纪要');await page.locator('[name="status"]').selectOption('进行中');await page.locator('[name="progress"]').fill('45');
@@ -84,6 +110,21 @@ try{
   await page.screenshot({path:path.join(root,'test-results/calendar.png'),fullPage:true});await page.locator('#calendar-save').click();await page.locator('#calendar-editor').waitFor({state:'hidden'});await page.locator('#workload-preview b').filter({hasText:'16'}).waitFor();await page.locator('#save-task').click();await page.locator('#editor').waitFor({state:'hidden'});
   assert.match(await page.locator('[data-work-row="HOURS-CROSS"]').textContent(),/16 H/);
   await page.screenshot({path:path.join(root,'test-results/worklist-hours.png'),fullPage:true});
+  // Editing from a chart updates summaries; removal and recovery immediately recalculate counts.
+  await page.locator('[data-view="dashboard"]').click();
+  await page.locator('[data-gantt-row="HOURS-UI"]').focus();await page.keyboard.press('Enter');
+  await page.locator('[name="status"]').selectOption('已完成');await page.locator('[name="progress"]').fill('100');await page.locator('#save-task').click();await page.locator('#editor').waitFor({state:'hidden'});
+  assert.equal(await page.locator('[data-dashboard-kpi="completed"]').textContent(),'1项');
+  assert.match(await page.locator('.dash-milestone[data-task="HOURS-UI"]').textContent(),/已完成/);
+  await page.locator('.dash-milestone[data-task="HOURS-UI"]').click();page.once('dialog',dialog=>dialog.accept());await page.locator('[data-action="archive-task"]').click();await page.locator('#editor').waitFor({state:'hidden'});
+  assert.equal(await page.locator('[data-dashboard-kpi="total"]').textContent(),'5项');assert.equal(await page.locator('[data-dashboard-kpi="completed"]').textContent(),'0项');
+  await page.locator('[data-action="toggle-archive"]').click();await page.locator('[data-restore-task="HOURS-UI"]').click();await page.locator('[data-action="toggle-archive"]').click();
+  assert.equal(await page.locator('[data-dashboard-kpi="total"]').textContent(),'6项');assert.equal(await page.locator('[data-dashboard-kpi="completed"]').textContent(),'1项');
+  await page.locator('#search').fill('不存在的工作项');assert.equal(await page.locator('[data-dashboard-total]').getAttribute('data-dashboard-total'),'0');assert.ok(await page.locator('.dash-no-results').isVisible());
+  await page.locator('[data-action="reset-dashboard-filters"]').click();
+  await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(root,'test-results/dashboard-mobile.png'),fullPage:true});
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'Mobile dashboard must not overflow');
+  await page.setViewportSize({width:1512,height:1000});await page.locator('[data-view="list"]').click();
   const csvPromise=page.waitForEvent('download');await page.locator('[data-action="csv"]').click();const csvFile=path.join(data,'worklist.csv');await (await csvPromise).saveAs(csvFile);const csvText=await readFile(csvFile,'utf8');assert.ok(csvText.includes('计划工时H')&&csvText.includes('有效工作日')&&csvText.includes('工时计算核对'));
   const downloadPromise=page.waitForEvent('download');await page.locator('[data-action="export"]').click();const download=await downloadPromise;await download.saveAs(path.join(root,'test-results/export.json'));
   // Network failure cannot clear draft or close the editor.
@@ -110,6 +151,7 @@ try{
   // A second device has an independent session.
   const otherContext=await browser.newContext(),device=await otherContext.newPage();await device.goto(base);await device.locator('#username').fill('browser.member');await device.locator('#password').fill(memberPassword);await device.locator('#login-form button[type=submit]').click();await device.getByRole('heading',{name:'每个计划，都向前一步。'}).waitFor();
   await page.locator('[data-action="create-project"]').first().click();await page.locator('#project-form [name="name"]').fill('密码修改后保留的项目');await page.locator('#save-project').click();await page.getByRole('heading',{name:'密码修改后保留的项目',exact:true}).waitFor();
+  await page.locator('[data-view="dashboard"]').click();assert.equal(await page.locator('[data-dashboard-kpi="total"]').textContent(),'0项');assert.ok(await page.locator('.dash-no-results').isVisible());await page.screenshot({path:path.join(root,'test-results/dashboard-empty.png'),fullPage:true});
   await page.locator('#account-button').click();await page.locator('#current-password').fill('wrong-password-2026');await page.locator('#new-password').fill(changedPassword);await page.locator('#confirm-new-password').fill(changedPassword);await page.locator('#change-password').click();await page.locator('#password-error').filter({hasText:'当前密码不正确'}).waitFor();
   await page.locator('#current-password').fill(memberPassword);await page.screenshot({path:path.join(root,'test-results/change-password.png'),fullPage:true});await page.locator('#change-password').click();await page.locator('#account-editor').waitFor({state:'hidden'});
   await device.reload();await device.locator('#login-form').waitFor({state:'visible'});await otherContext.close();
@@ -123,6 +165,6 @@ try{
   await page.locator('#logout').click();await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(root,'test-results/login-mobile.png'),fullPage:true});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
   await page.locator('#auth-tabs [data-auth-mode="register"]').click();await page.screenshot({path:path.join(root,'test-results/register-mobile.png'),fullPage:true});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({passed:['default project work register','work content and responsibility columns','holiday and makeup-day hours preview','status filtering','missing-year calendar setup and recalculation','working-days and planned-hours CSV','50 seed tasks','multi-project generation','CRUD and search','process restart persistence','draft recovery','parallel conflict merge','version history','task recycle and restore','project recycle and restore','offline recovery','backup export','mobile layout','account registration','password confirmation validation','recovery-code download','user data isolation','password change and session revocation','password reset and recovery-code rotation','account persistence after restart','mobile login and registration'],consoleErrors:errors}));
+  console.log(JSON.stringify({passed:['automatic dashboard from saved tasks','dashboard stage and status filters','unassigned owner drilldown','chart keyboard navigation','Gantt editing and live recalculation','dashboard deletion and recovery counts','dashboard empty and zero-result states','dashboard mobile layout','dashboard navigation preserves data','default project work register','work content and responsibility columns','holiday and makeup-day hours preview','status filtering','missing-year calendar setup and recalculation','working-days and planned-hours CSV','50 seed tasks','multi-project generation','CRUD and search','process restart persistence','draft recovery','parallel conflict merge','version history','task recycle and restore','project recycle and restore','offline recovery','backup export','mobile layout','account registration','password confirmation validation','recovery-code download','user data isolation','password change and session revocation','password reset and recovery-code rotation','account persistence after restart','mobile login and registration'],consoleErrors:errors}));
 }catch(error){console.error(error);console.error(logs.slice(-7000));process.exitCode=1;}
 finally{if(browser)await browser.close();await stop();await rm(data,{recursive:true,force:true});}
