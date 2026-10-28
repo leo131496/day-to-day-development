@@ -18,6 +18,7 @@ import uuid
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
+from work_calendar import DEFAULT_CALENDARS, calendar_from_text, calculate_workload, enrich_task, project_metrics
 
 ROOT = Path(__file__).resolve().parent
 STATUSES = ['待确认', '未开始', '进行中', '待验收', '受阻', '已延期', '暂停', '已完成']
@@ -203,6 +204,10 @@ class Store:
                     role TEXT NOT NULL DEFAULT 'member', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS auth_attempts(scope TEXT NOT NULL, subject TEXT NOT NULL, at REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS auth_attempts_lookup ON auth_attempts(scope,subject,at);
+                CREATE TABLE IF NOT EXISTS work_calendars(user_id TEXT NOT NULL REFERENCES users(id), year INTEGER NOT NULL,
+                    data TEXT NOT NULL, version INTEGER NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(user_id,year));
+                CREATE TABLE IF NOT EXISTS calendar_revisions(user_id TEXT NOT NULL REFERENCES users(id), year INTEGER NOT NULL,
+                    version INTEGER NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(user_id,year,version));
             ''')
             db.execute('BEGIN IMMEDIATE')
             if not db.execute("SELECT 1 FROM meta WHERE key='initialized'").fetchone():
@@ -259,6 +264,15 @@ class Store:
         return {**json.loads(row['data']), 'version': row['version'],
                 'archived': bool(row['archived']), 'updatedAt': row['updated_at']}
 
+    def calendars(self, user_id, db=None):
+        if db is None:
+            with self.connect() as connection:
+                return self.calendars(user_id, connection)
+        calendars = {year: {**data, 'version': 0, 'custom': False} for year, data in DEFAULT_CALENDARS.items()}
+        for row in db.execute('SELECT * FROM work_calendars WHERE user_id=?', (user_id,)):
+            calendars[str(row['year'])] = {**json.loads(row['data']), 'version': row['version'], 'custom': True, 'updatedAt': row['updated_at']}
+        return calendars
+
     def write(self, db, project_id, task, previous, action, archived=False):
         version, stamp = previous + 1, now()
         raw = json.dumps(task, ensure_ascii=False, allow_nan=False)
@@ -295,8 +309,11 @@ class Store:
             if not row:
                 raise APIError(404, '项目不存在')
             project = {**json.loads(row['data']), 'id': row['id'], 'version': row['version'], 'archived': bool(row['archived'])}
-            tasks = [self.task(r) for r in db.execute('SELECT * FROM tasks WHERE project_id=? ORDER BY id', (project_id,))]
-            return {'format': 'project-board-v1', 'exportedAt': now(), 'project': project, 'tasks': tasks}
+            calendars = self.calendars(row['owner_id'], db)
+            tasks = [enrich_task(self.task(r), calendars) for r in db.execute('SELECT * FROM tasks WHERE project_id=? ORDER BY id', (project_id,))]
+            summary = project_metrics(tasks)
+            return {'format': 'project-board-v1', 'exportedAt': now(), 'project': project, 'tasks': tasks,
+                    'summary': summary, 'workCalendar': {'region': 'CN', 'hoursPerDay': 8, 'inclusive': True, 'years': calendars}}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -382,7 +399,8 @@ class Handler(BaseHTTPRequestHandler):
                 db.execute('SELECT 1').fetchone()
             return self.respond(200, {'ok': True})
         if not path.startswith('/api/'):
-            files = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/auth.css': 'auth.css', '/favicon.svg': 'favicon.svg'}
+            files = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/auth.css': 'auth.css',
+                     '/worklist.css': 'worklist.css', '/favicon.svg': 'favicon.svg'}
             if method != 'GET' or path not in files:
                 raise APIError(404, '页面不存在')
             file = ROOT / 'static' / files[path]
@@ -401,6 +419,31 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, {'csrf': session['csrf'], 'user': public_user(session)})
         if path == '/api/change-password' and method == 'POST':
             return self.change_password(session, self.body())
+        if path == '/api/calendar' and method == 'GET':
+            return self.respond(200, {'region': 'CN', 'hoursPerDay': 8, 'years': self.store.calendars(session['user_id'])})
+        if path == '/api/work-hours' and method == 'POST':
+            body = self.body()
+            return self.respond(200, {'workload': calculate_workload(body.get('start'), body.get('end'), self.store.calendars(session['user_id']))})
+        calendar_match = re.fullmatch(r'/api/calendar/(\d{4})', path)
+        if calendar_match and method == 'PUT':
+            body = self.body()
+            year = int(calendar_match.group(1))
+            try:
+                data = calendar_from_text(year, body)
+            except (ValueError, TypeError) as exc:
+                raise APIError(400, str(exc))
+            with self.store.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                previous = db.execute('SELECT version FROM work_calendars WHERE user_id=? AND year=?', (session['user_id'], year)).fetchone()
+                version = previous['version'] if previous else 0
+                if type(body.get('version')) is not int or body['version'] != version:
+                    raise APIError(409, '工作日历已在其他页面更新，请重新打开后保存')
+                raw, stamp = json.dumps(data, ensure_ascii=False), now()
+                db.execute('INSERT INTO work_calendars VALUES(?,?,?,?,?) ON CONFLICT(user_id,year) DO UPDATE SET '
+                           'data=excluded.data, version=excluded.version, updated_at=excluded.updated_at',
+                           (session['user_id'], year, raw, version+1, stamp))
+                db.execute('INSERT INTO calendar_revisions VALUES(?,?,?,?,?)', (session['user_id'], year, version+1, raw, stamp))
+            return self.respond(200, {'ok': True, 'calendar': {**data, 'version': version+1, 'custom': True}})
         if path == '/api/logout' and method == 'POST':
             with self.store.connect() as db:
                 db.execute('DELETE FROM sessions WHERE token=?', (session['token'],))
@@ -411,12 +454,14 @@ class Handler(BaseHTTPRequestHandler):
             with self.store.connect() as db:
                 db.execute('BEGIN')
                 projects = []
+                calendars = self.store.calendars(session['user_id'], db)
                 for r in db.execute('SELECT * FROM projects WHERE owner_id=? ORDER BY updated_at DESC', (session['user_id'],)):
                     task_rows = db.execute('SELECT data FROM tasks WHERE project_id=? AND archived=0', (r['id'],)).fetchall()
-                    tasks = [json.loads(t['data']) for t in task_rows]
+                    tasks = [enrich_task(json.loads(t['data']), calendars) for t in task_rows]
+                    summary = project_metrics(tasks)
                     projects.append({**json.loads(r['data']), 'id': r['id'], 'version': r['version'],
                                      'archived': bool(r['archived']), 'updatedAt': r['updated_at'],
-                                     'total': len(tasks), 'completed': sum(t['status'] == '已完成' for t in tasks)})
+                                     **summary, 'summary': summary})
             return self.respond(200, {'projects': projects})
         if path == '/api/projects' and method == 'POST':
             body = self.body()
@@ -479,7 +524,7 @@ class Handler(BaseHTTPRequestHandler):
                 if db.execute('SELECT 1 FROM tasks WHERE project_id=? AND id=?', (project_id, task['id'])).fetchone():
                     raise APIError(409, '任务编号已存在，请换一个编号')
                 result = self.store.write(db, project_id, task, 0, '新建任务')
-            return self.respond(201, {'task': result})
+            return self.respond(201, {'task': enrich_task(result, self.store.calendars(session['user_id']))})
         match = re.fullmatch(r'/api/tasks/([A-Za-z0-9_.-]+)(?:/(history|restore|archive))?', path)
         if match:
             task_id, action = match.groups()
@@ -497,7 +542,7 @@ class Handler(BaseHTTPRequestHandler):
                 if (method == 'PUT' and action is None) or (method == 'POST' and action in ['restore', 'archive']):
                     body = self.body()
                     if type(body.get('version')) is not int or body['version'] != row['version']:
-                        raise APIError(409, '这项任务已被其他页面更新。你的草稿已保留，请查看最新版本后合并。', current=self.store.task(row))
+                        raise APIError(409, '这项任务已被其他页面更新。你的草稿已保留，请查看最新版本后合并。', current=enrich_task(self.store.task(row), self.store.calendars(session['user_id'], db)))
                     archived = bool(row['archived'])
                     if action == 'restore':
                         old = db.execute('SELECT * FROM revisions WHERE project_id=? AND task_id=? AND version=?',
@@ -515,7 +560,7 @@ class Handler(BaseHTTPRequestHandler):
                     result = self.store.write(db, project_id, task, row['version'], message, archived)
                 else:
                     raise APIError(405, '不支持的操作')
-            return self.respond(200, {'task': result})
+            return self.respond(200, {'task': enrich_task(result, self.store.calendars(session['user_id']))})
         raise APIError(404, '接口不存在')
 
     def rate_limit(self, scope, subject, limit=30, window=300):

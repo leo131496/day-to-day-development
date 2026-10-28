@@ -25,7 +25,12 @@ try{
   await page.goto(base);await page.locator('#username').fill('admin');await page.locator('#password').fill(password);await page.locator('#login-form button[type=submit]').click();
   await page.getByRole('heading',{name:'每个计划，都向前一步。'}).waitFor();
   await page.screenshot({path:path.join(root,'test-results/home.png'),fullPage:true});
-  await page.locator('.project-card [data-project="haikang"]').click();await page.locator('.task-card').first().waitFor();
+  await page.locator('.project-card [data-project="haikang"]').click();await page.locator('[data-work-row]').first().waitFor();
+  assert.equal(await page.locator('[data-work-row]').count(),50);
+  assert.match(await page.locator('.viewtab.active').textContent(),/项目工作清单/);
+  for(const text of ['负责人','当前状态','开始日期','结束日期','工作日','计划工时','进度'])assert.ok((await page.locator('.work-table thead').textContent()).includes(text));
+  await page.screenshot({path:path.join(root,'test-results/worklist-seed.png'),fullPage:true});
+  await page.locator('[data-view="board"]').click();await page.locator('.task-card').first().waitFor();
   assert.equal(await page.locator('.task-card').count(),50);
   await page.screenshot({path:path.join(root,'test-results/board.png'),fullPage:true});
   await page.locator('[data-task="6.7"]').click();await page.locator('textarea[name="content"]').waitFor();
@@ -40,15 +45,16 @@ try{
   await page.screenshot({path:path.join(root,'test-results/generate.png'),fullPage:true});
   await page.locator('#save-project').click();await page.getByRole('heading',{name:'官网升级 · 集成验证',exact:true}).waitFor();
   const projectId=await page.evaluate(()=>location.hash.slice(1));
+  assert.equal(await page.locator('[data-work-row]').count(),3);await page.locator('[data-view="board"]').click();
   assert.equal(await page.locator('.task-card').count(),3);
   await page.locator('[data-task="T-001"]').click();
   await page.locator('[name="nextAction"]').fill('已完成访谈并整理纪要');await page.locator('[name="status"]').selectOption('进行中');await page.locator('[name="progress"]').fill('45');
   await page.locator('#save-task').click();await page.locator('#editor').waitFor({state:'hidden'});
   // A real process restart must retain the login session, new project, and saved edits.
-  await stop();await start();await page.reload();await page.locator('[data-task="T-001"]').waitFor();await page.locator('[data-task="T-001"]').click();
+  await stop();await start();await page.reload();await page.locator('[data-work-row]').first().waitFor();await page.locator('[data-view="board"]').click();await page.locator('[data-task="T-001"]').waitFor();await page.locator('[data-task="T-001"]').click();
   assert.equal(await page.locator('[name="nextAction"]').inputValue(),'已完成访谈并整理纪要');assert.equal(await page.locator('[name="progress"]').inputValue(),'45');
   // Closing and refreshing before save must preserve the local draft.
-  await page.locator('[name="blocker"]').fill('草稿：等待客户确认');await page.locator('[data-close="editor"]').click();await page.reload();await page.locator('[data-task="T-001"]').click();
+  await page.locator('[name="blocker"]').fill('草稿：等待客户确认');await page.locator('[data-close="editor"]').click();await page.reload();await page.locator('[data-work-row]').first().waitFor();await page.locator('[data-view="board"]').click();await page.locator('[data-task="T-001"]').click();
   assert.equal(await page.locator('[name="blocker"]').inputValue(),'草稿：等待客户确认');assert.match(await page.locator('.draft-notice').textContent(),/恢复/);
   await page.locator('#save-task').click();await page.locator('#editor').waitFor({state:'hidden'});
   // Parallel editors: the stale editor must receive a conflict and keep its input.
@@ -64,11 +70,25 @@ try{
   page.once('dialog',dialog=>dialog.accept());await page.locator('[data-action="archive-task"]').click();await page.locator('#editor').waitFor({state:'hidden'});await page.locator('#search').fill('');await page.locator('[data-action="toggle-archive"]').click();
   await page.locator('[data-restore-task="CUSTOM-UI"]').click();await page.locator('[data-action="toggle-archive"]').click();await page.locator('[data-task="CUSTOM-UI"]').waitFor();
   await page.locator('[data-view="overview"]').click();await page.screenshot({path:path.join(root,'test-results/overview.png'),fullPage:true});
-  await page.locator('[data-view="todo"]').click();await page.screenshot({path:path.join(root,'test-results/todo.png'),fullPage:true});
+  await page.locator('[data-view="list"]').click();await page.screenshot({path:path.join(root,'test-results/worklist.png'),fullPage:true});
+  // Legal holidays are excluded, weekend makeup days included; hours persist through the API.
+  await page.locator('[data-action="new-task"]').click();await page.locator('[name="id"]').fill('HOURS-UI');await page.locator('[name="title"]').fill('工时计算核对');await page.locator('[name="owner"]').fill('张三');
+  await page.locator('[name="content"]').fill('核对国庆期间放假与补班安排，形成项目交付记录。');await page.locator('[name="start"]').fill('2026-10-01');await page.locator('[name="end"]').fill('2026-10-10');await page.locator('[name="status"]').selectOption('进行中');await page.locator('[name="progress"]').fill('50');
+  await page.locator('#workload-preview b').filter({hasText:'24'}).waitFor();assert.match(await page.locator('#workload-preview').textContent(),/补班 1 天/);await page.locator('#save-task').click();await page.locator('#editor').waitFor({state:'hidden'});
+  assert.match(await page.locator('[data-work-row="HOURS-UI"]').textContent(),/24 H/);assert.equal(await page.locator('[data-work-row="HOURS-UI"] [data-progress]').getAttribute('data-progress'),'50');
+  await page.locator('#filter-status').selectOption('进行中');assert.equal(await page.locator('[data-work-row="HOURS-UI"]').count(),1);await page.locator('#filter-status').selectOption('');
+  // A missing calendar never produces invented hours; saving a custom year recalculates the open draft.
+  await page.locator('[data-action="new-task"]').click();await page.locator('[name="id"]').fill('HOURS-CROSS');await page.locator('[name="title"]').fill('跨年排期核对');await page.locator('[name="start"]').fill('2026-12-31');await page.locator('[name="end"]').fill('2027-01-04');
+  await page.locator('#workload-preview').filter({hasText:'2027'}).waitFor();await page.locator('#workload-preview [data-action="calendar"]').click();
+  await page.locator('#calendar-new-year').fill('2027');await page.locator('#calendar-add-year').click();await page.locator('#calendar-form [name="sourceTitle"]').fill('集成测试专用日历（非官方通知）');await page.locator('#calendar-form [name="holidayText"]').fill('2027-01-01~2027-01-03 | 测试休息');
+  await page.screenshot({path:path.join(root,'test-results/calendar.png'),fullPage:true});await page.locator('#calendar-save').click();await page.locator('#calendar-editor').waitFor({state:'hidden'});await page.locator('#workload-preview b').filter({hasText:'16'}).waitFor();await page.locator('#save-task').click();await page.locator('#editor').waitFor({state:'hidden'});
+  assert.match(await page.locator('[data-work-row="HOURS-CROSS"]').textContent(),/16 H/);
+  await page.screenshot({path:path.join(root,'test-results/worklist-hours.png'),fullPage:true});
+  const csvPromise=page.waitForEvent('download');await page.locator('[data-action="csv"]').click();const csvFile=path.join(data,'worklist.csv');await (await csvPromise).saveAs(csvFile);const csvText=await readFile(csvFile,'utf8');assert.ok(csvText.includes('计划工时H')&&csvText.includes('有效工作日')&&csvText.includes('工时计算核对'));
   const downloadPromise=page.waitForEvent('download');await page.locator('[data-action="export"]').click();const download=await downloadPromise;await download.saveAs(path.join(root,'test-results/export.json'));
   // Network failure cannot clear draft or close the editor.
   await page.locator('[data-task="T-001"]').click();await page.locator('[name="decision"]').fill('断网时填写的决策');await context.setOffline(true);await page.locator('#save-task').click();await page.locator('#task-error').filter({hasText:/fetch|网络|Failed/}).waitFor();assert.equal(await page.locator('[name="decision"]').inputValue(),'断网时填写的决策');await context.setOffline(false);await page.locator('#save-task').click();await page.locator('#editor').waitFor({state:'hidden'});
-  await page.setViewportSize({width:390,height:844});await page.locator('[data-view="board"]').click();await page.screenshot({path:path.join(root,'test-results/mobile.png'),fullPage:true});
+  await page.setViewportSize({width:390,height:844});await page.locator('[data-view="list"]').click();await page.screenshot({path:path.join(root,'test-results/worklist-mobile.png'),fullPage:true});
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'Mobile page must not overflow');
   await page.locator('[data-action="edit-project"]').click();await page.locator('[name="name"]').fill('官网升级 · 已修改');await page.locator('#save-project').click();await page.getByRole('heading',{name:'官网升级 · 已修改',exact:true}).waitFor();
   page.once('dialog',dialog=>dialog.accept());await page.locator('[data-action="delete-project"]').click();await page.getByRole('heading',{name:'每个计划，都向前一步。'}).waitFor();
@@ -103,6 +123,6 @@ try{
   await page.locator('#logout').click();await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(root,'test-results/login-mobile.png'),fullPage:true});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
   await page.locator('#auth-tabs [data-auth-mode="register"]').click();await page.screenshot({path:path.join(root,'test-results/register-mobile.png'),fullPage:true});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({passed:['50 seed tasks','multi-project generation','CRUD and search','process restart persistence','draft recovery','parallel conflict merge','version history','task recycle and restore','project recycle and restore','offline recovery','backup export','mobile layout','account registration','password confirmation validation','recovery-code download','user data isolation','password change and session revocation','password reset and recovery-code rotation','account persistence after restart','mobile login and registration'],consoleErrors:errors}));
+  console.log(JSON.stringify({passed:['default project work register','work content and responsibility columns','holiday and makeup-day hours preview','status filtering','missing-year calendar setup and recalculation','working-days and planned-hours CSV','50 seed tasks','multi-project generation','CRUD and search','process restart persistence','draft recovery','parallel conflict merge','version history','task recycle and restore','project recycle and restore','offline recovery','backup export','mobile layout','account registration','password confirmation validation','recovery-code download','user data isolation','password change and session revocation','password reset and recovery-code rotation','account persistence after restart','mobile login and registration'],consoleErrors:errors}));
 }catch(error){console.error(error);console.error(logs.slice(-7000));process.exitCode=1;}
 finally{if(browser)await browser.close();await stop();await rm(data,{recursive:true,force:true});}
