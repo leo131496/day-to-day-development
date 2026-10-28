@@ -1,7 +1,7 @@
 // Run with the installed Playwright runtime (see README). No browser dependency ships with the app.
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -22,7 +22,7 @@ try{
   await start();browser=await chromium.launch({headless:true});
   const context=await browser.newContext({viewport:{width:1512,height:1000}}),page=await context.newPage(),errors=[];
   page.on('pageerror',e=>errors.push(e.message));
-  await page.goto(base);await page.locator('#password').fill(password);await page.locator('#login-form button').click();
+  await page.goto(base);await page.locator('#username').fill('admin');await page.locator('#password').fill(password);await page.locator('#login-form button[type=submit]').click();
   await page.getByRole('heading',{name:'每个计划，都向前一步。'}).waitFor();
   await page.screenshot({path:path.join(root,'test-results/home.png'),fullPage:true});
   await page.locator('.project-card [data-project="haikang"]').click();await page.locator('.task-card').first().waitFor();
@@ -73,7 +73,36 @@ try{
   await page.locator('[data-action="edit-project"]').click();await page.locator('[name="name"]').fill('官网升级 · 已修改');await page.locator('#save-project').click();await page.getByRole('heading',{name:'官网升级 · 已修改',exact:true}).waitFor();
   page.once('dialog',dialog=>dialog.accept());await page.locator('[data-action="delete-project"]').click();await page.getByRole('heading',{name:'每个计划，都向前一步。'}).waitFor();
   await page.locator('#mobile-menu').click();await page.locator('#trash').click();await page.locator(`[data-restore-project="${projectId}"]`).click();await page.getByRole('heading',{name:'官网升级 · 已修改',exact:true}).waitFor();
+  // Account lifecycle, including UI validation, recovery-code download and session revocation.
+  await page.setViewportSize({width:1512,height:1000});await page.locator('#logout').click();await page.locator('#login-form').waitFor({state:'visible'});
+  await page.screenshot({path:path.join(root,'test-results/login.png'),fullPage:true});
+  await page.locator('#auth-tabs [data-auth-mode="register"]').click();
+  await page.locator('#register-name').fill('林小序');await page.locator('#register-username').fill('browser.member');
+  const memberPassword='member-password-2026',changedPassword='member-changed-password-2026',resetPassword='member-reset-password-2026';
+  await page.locator('#register-password').fill(memberPassword);await page.locator('#register-confirm').fill('mismatch-password');await page.locator('#register-form button[type=submit]').click();
+  await page.locator('#register-error').filter({hasText:'不一致'}).waitFor();
+  await page.locator('#register-confirm').fill(memberPassword);await page.screenshot({path:path.join(root,'test-results/register.png'),fullPage:true});
+  await page.locator('#register-form button[type=submit]').click();await page.locator('#recovery-receipt').waitFor({state:'visible'});
+  const recoveryCode=await page.locator('#recovery-code').textContent();assert.match(recoveryCode,/^RC-/);assert.equal(await page.locator('#recovery-continue').isDisabled(),true);
+  const recoveryDownload=page.waitForEvent('download');await page.locator('#download-recovery').click();const recoveryFile=path.join(data,'recovery.txt');await (await recoveryDownload).saveAs(recoveryFile);assert.ok((await readFile(recoveryFile,'utf8')).includes(recoveryCode));
+  await page.locator('#recovery-saved').check();await page.locator('#recovery-continue').click();assert.equal(await page.locator('#username').inputValue(),'browser.member');assert.equal(await page.locator('#recovery-code').textContent(),'');
+  await page.locator('#password').fill(memberPassword);await page.locator('#login-form button[type=submit]').click();await page.getByRole('heading',{name:'每个计划，都向前一步。'}).waitFor();assert.equal(await page.locator('.project-card').count(),0);
+  // A second device has an independent session.
+  const otherContext=await browser.newContext(),device=await otherContext.newPage();await device.goto(base);await device.locator('#username').fill('browser.member');await device.locator('#password').fill(memberPassword);await device.locator('#login-form button[type=submit]').click();await device.getByRole('heading',{name:'每个计划，都向前一步。'}).waitFor();
+  await page.locator('[data-action="create-project"]').first().click();await page.locator('#project-form [name="name"]').fill('密码修改后保留的项目');await page.locator('#save-project').click();await page.getByRole('heading',{name:'密码修改后保留的项目',exact:true}).waitFor();
+  await page.locator('#account-button').click();await page.locator('#current-password').fill('wrong-password-2026');await page.locator('#new-password').fill(changedPassword);await page.locator('#confirm-new-password').fill(changedPassword);await page.locator('#change-password').click();await page.locator('#password-error').filter({hasText:'当前密码不正确'}).waitFor();
+  await page.locator('#current-password').fill(memberPassword);await page.screenshot({path:path.join(root,'test-results/change-password.png'),fullPage:true});await page.locator('#change-password').click();await page.locator('#account-editor').waitFor({state:'hidden'});
+  await device.reload();await device.locator('#login-form').waitFor({state:'visible'});await otherContext.close();
+  await page.locator('#logout').click();await page.locator('#password').fill(memberPassword);await page.locator('#login-form button[type=submit]').click();await page.locator('#login-error').filter({hasText:'账号或密码不正确'}).waitFor();
+  await page.locator('#password').fill(changedPassword);await page.locator('#login-form button[type=submit]').click();await page.getByRole('heading',{name:'密码修改后保留的项目',exact:true}).waitFor();await page.locator('#logout').click();
+  await page.locator('#login-form [data-auth-mode="reset"]').click();await page.locator('#reset-username').fill('browser.member');await page.locator('#reset-code').fill(recoveryCode);await page.locator('#reset-password').fill(resetPassword);await page.locator('#reset-confirm').fill(resetPassword);
+  await page.screenshot({path:path.join(root,'test-results/reset-password.png'),fullPage:true});
+  await page.locator('#reset-form button[type=submit]').click();await page.locator('#recovery-title').filter({hasText:'密码已重置'}).waitFor();assert.notEqual(await page.locator('#recovery-code').textContent(),recoveryCode);
+  await page.locator('#recovery-saved').check();await page.locator('#recovery-continue').click();await page.locator('#password').fill(resetPassword);await page.locator('#login-form button[type=submit]').click();await page.getByRole('heading',{name:'密码修改后保留的项目',exact:true}).waitFor();
+  await stop();await start();await page.reload();await page.getByRole('heading',{name:'密码修改后保留的项目',exact:true}).waitFor();
+  await page.locator('#logout').click();await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(root,'test-results/login-mobile.png'),fullPage:true});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  await page.locator('#auth-tabs [data-auth-mode="register"]').click();await page.screenshot({path:path.join(root,'test-results/register-mobile.png'),fullPage:true});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({passed:['50 seed tasks','multi-project generation','CRUD and search','process restart persistence','draft recovery','parallel conflict merge','version history','task recycle and restore','project recycle and restore','offline recovery','backup export','mobile layout'],consoleErrors:errors}));
+  console.log(JSON.stringify({passed:['50 seed tasks','multi-project generation','CRUD and search','process restart persistence','draft recovery','parallel conflict merge','version history','task recycle and restore','project recycle and restore','offline recovery','backup export','mobile layout','account registration','password confirmation validation','recovery-code download','user data isolation','password change and session revocation','password reset and recovery-code rotation','account persistence after restart','mobile login and registration'],consoleErrors:errors}));
 }catch(error){console.error(error);console.error(logs.slice(-7000));process.exitCode=1;}
 finally{if(browser)await browser.close();await stop();await rm(data,{recursive:true,force:true});}

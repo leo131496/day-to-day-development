@@ -2,7 +2,8 @@
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const statuses = ['待确认','未开始','进行中','待验收','受阻','已延期','暂停','已完成'];
-const state = {csrf:'',projects:[],project:null,tasks:[],view:'board',page:'home',filters:{q:'',stage:'',owner:'',focus:'all'},archived:false,load:0};
+const state = {csrf:'',user:null,projects:[],project:null,tasks:[],view:'board',page:'home',filters:{q:'',stage:'',owner:'',focus:'all'},archived:false,load:0};
+let recoveryPending=false,recoveryReceipt=null;
 let editTask = null, taskDirty = false, projectDirty = false, generated = [], projectMode = 'create';
 const prefix = 'project-space-draft-v1:';
 const today = () => new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
@@ -14,9 +15,10 @@ const progress = tasks => tasks.length ? Math.round(tasks.filter(done).length/ta
 const tag = (text,color='') => `<span class="tag ${color}">${esc(text)}</span>`;
 const track = n => `<div class="progress-track"><progress max="100" value="${Number(n)||0}" aria-label="完成进度 ${Number(n)||0}%"></progress></div>`;
 function toast(message){$('toast').textContent=message;$('toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').hidden=true,5500);}
-function draftGet(key){try{return JSON.parse(localStorage.getItem(prefix+key)||'null');}catch{return null;}}
-function draftSet(key,value){try{localStorage.setItem(prefix+key,JSON.stringify(value));return true;}catch{toast('浏览器草稿保存失败，请保持页面打开并保存到数据库。');return false;}}
-function draftRemove(key){try{localStorage.removeItem(prefix+key);}catch{}}
+const draftKey=key=>prefix+(state.user?.id||'anonymous')+':'+key;
+function draftGet(key){try{const raw=localStorage.getItem(draftKey(key))||(state.user?.id==='admin'?localStorage.getItem(prefix+key):null);return JSON.parse(raw||'null');}catch{return null;}}
+function draftSet(key,value){try{localStorage.setItem(draftKey(key),JSON.stringify(value));if(state.user?.id==='admin')localStorage.removeItem(prefix+key);return true;}catch{toast('浏览器草稿保存失败，请保持页面打开并保存到数据库。');return false;}}
+function draftRemove(key){try{localStorage.removeItem(draftKey(key));if(state.user?.id==='admin')localStorage.removeItem(prefix+key);}catch{}}
 async function api(path,options={}){
   const response=await fetch(path,{...options,headers:{'Content-Type':'application/json','X-Requested-With':'ProjectBoard','X-CSRF-Token':state.csrf,...options.headers},cache:'no-store'});
   const data=await response.json();
@@ -26,18 +28,61 @@ async function api(path,options={}){
 const post=(path,body={})=>api(path,{method:'POST',body:JSON.stringify(body)});
 const projectPath=suffix=>'/api/projects/'+state.project.id+(suffix||'');
 function showLogin(){
+  clearTimeout(toast.timer);$('toast').hidden=true;
+  state.load++;state.csrf='';state.user=null;state.projects=[];state.tasks=[];state.project=null;
   $('login').hidden=false;$('workspace').hidden=true;
-  for(const id of ['editor','project-editor'])if($(id).open)$(id).close();
+  for(const id of ['editor','project-editor','account-editor'])if($(id).open)$(id).close();
+  taskDirty=false;projectDirty=false;
+  if(!recoveryPending)authMode('login');
 }
-async function boot(){try{const session=await api('/api/session');state.csrf=session.csrf;await enter();}catch{showLogin();}}
+function setSession(data){state.csrf=data.csrf;state.user=data.user;$('account-name').textContent=data.user.displayName+' · 账号设置';$('account-button').textContent=data.user.displayName.slice(0,1);}
+async function boot(){try{setSession(await api('/api/session'));await enter();}catch{showLogin();}}
 async function enter(){
   $('login').hidden=true;$('workspace').hidden=false;
   await loadProjects();
   const id=location.hash.slice(1);
   if(id&&state.projects.some(p=>p.id===id&&!p.archived))await openProject(id);else home();
 }
-$('login-form').onsubmit=async e=>{e.preventDefault();const button=e.submitter;button.disabled=true;$('login-error').textContent='';try{const data=await post('/api/login',{password:$('password').value});state.csrf=data.csrf;$('password').value='';await enter();}catch(err){$('login-error').textContent=err.message;}finally{button.disabled=false;}};
+$('login-form').onsubmit=async e=>{e.preventDefault();const button=e.submitter;button.disabled=true;$('login-error').textContent='';try{setSession(await post('/api/login',{username:$('username').value.trim(),password:$('password').value}));$('password').value='';await enter();}catch(err){$('login-error').textContent=err.message;}finally{button.disabled=false;}};
 $('logout').onclick=async()=>{try{await post('/api/logout');showLogin();}catch(err){toast(err.message);}};
+$('account-settings').onclick=accountSettings;$('account-button').onclick=accountSettings;
+function authMode(mode){
+  if(recoveryPending)return;
+  for(const name of ['login','register','reset']){const form=$(name+'-form');form.hidden=name!==mode;form.querySelectorAll('input[autocomplete=current-password],input[autocomplete=new-password]').forEach(input=>{input.value='';input.type='password';});form.querySelectorAll('[data-toggle-password]').forEach(button=>{button.textContent='显示';button.setAttribute('aria-label','显示密码');});$(name+'-error').textContent='';}
+  $('recovery-receipt').hidden=true;$('auth-tabs').hidden=mode==='reset';
+  document.querySelectorAll('#auth-tabs [data-auth-mode]').forEach(button=>{button.classList.toggle('active',button.dataset.authMode===mode);button.setAttribute('aria-pressed',String(button.dataset.authMode===mode));});
+  if(mode==='reset'&&!$('reset-username').value)$('reset-username').value=$('username').value;
+}
+function showRecovery(data,reset=false){
+  recoveryPending=true;recoveryReceipt={username:data.user?.username||data.username,code:data.recoveryCode};
+  for(const mode of ['login','register','reset']){$(mode+'-form').hidden=true;$(mode+'-form').querySelectorAll('input[autocomplete=current-password],input[autocomplete=new-password]').forEach(input=>{input.value='';input.type='password';});}
+  $('auth-tabs').hidden=true;$('recovery-receipt').hidden=false;$('recovery-title').textContent=reset?'密码已重置':'账号已创建';
+  $('recovery-description').textContent=reset?'旧密码及原恢复码已失效。请保存新恢复码，再使用新密码登录。':'你好，'+(data.user?.displayName||recoveryReceipt.username)+'。请先保存用于找回密码的恢复码。';
+  $('recovery-code').textContent=data.recoveryCode;$('recovery-saved').checked=false;$('recovery-continue').disabled=true;
+}
+function authSubmit(mode,path){
+  $(mode+'-form').onsubmit=async e=>{
+    e.preventDefault();const form=e.target,values=Object.fromEntries(new FormData(form));
+    const password=values.password??values.newPassword;
+    if(password!==values.confirmPassword){$(mode+'-error').textContent='两次输入的密码不一致。';return;}
+    const controls=[...form.elements];controls.forEach(input=>input.disabled=true);form.setAttribute('aria-busy','true');$(mode+'-error').textContent='';
+    try{const data=await post(path,values);showRecovery(data,mode==='reset');}catch(err){$(mode+'-error').textContent=err.message;}finally{controls.forEach(input=>input.disabled=false);form.removeAttribute('aria-busy');}
+  };
+}
+authSubmit('register','/api/register');authSubmit('reset','/api/reset-password');
+$('download-recovery').onclick=()=>{if(recoveryReceipt)download('序 · 项目工作台\n账号：'+recoveryReceipt.username+'\n密码恢复码：'+recoveryReceipt.code+'\n\n恢复码可以重置账号密码，请妥善保管，不要分享给他人。\n恢复密码后旧恢复码失效，请保存系统提供的新恢复码。\n',recoveryReceipt.username+'-密码恢复码.txt','text/plain;charset=utf-8');};
+$('recovery-saved').onchange=e=>$('recovery-continue').disabled=!e.target.checked;
+$('recovery-continue').onclick=()=>{if(!$('recovery-saved').checked)return;$('username').value=recoveryReceipt.username;recoveryReceipt=null;recoveryPending=false;$('recovery-code').textContent='';$('reset-code').value='';authMode('login');$('password').focus();};
+function accountSettings(){
+  closeNav();const user=state.user;if(!user)return;
+  $('account-editor').innerHTML=`<div class="dialog-head"><div><small>YOUR ACCOUNT</small><h2 id="account-title">账号设置</h2></div><button class="dialog-close" data-close="account-editor" aria-label="关闭账号设置">×</button></div><form id="password-form" class="account-form"><div class="dialog-body"><div class="account-profile"><span class="account-avatar">${esc(user.displayName.slice(0,1))}</span><div><strong>${esc(user.displayName)}</strong><small>登录账号：${esc(user.username)}</small></div></div><div class="form-section">修改登录密码</div><label>当前密码<input id="current-password" name="currentPassword" type="password" autocomplete="current-password" required maxlength="128" placeholder="请输入当前密码"></label><label>新密码<div class="password-input"><input id="new-password" name="newPassword" type="password" autocomplete="new-password" required minlength="12" maxlength="128" placeholder="至少 12 个字符，支持长密码"><button type="button" data-toggle-password="new-password" aria-label="显示密码">显示</button></div></label><label>确认新密码<input id="confirm-new-password" name="confirmPassword" type="password" autocomplete="new-password" required minlength="12" maxlength="128" placeholder="再次输入新密码"></label><p class="hint">修改成功后，其他设备上的登录将失效。当前页面继续保持登录，项目数据与已保存的恢复码保留。</p><p id="password-error" class="error" role="alert"></p></div><div class="dialog-foot"><small>密码不会以明文保存在数据库中</small><button class="primary" type="submit" id="change-password">保存新密码</button></div></form>`;
+  $('password-form').onsubmit=async e=>{
+    e.preventDefault();const data=Object.fromEntries(new FormData(e.target));
+    if(data.newPassword!==data.confirmPassword){$('password-error').textContent='两次输入的新密码不一致。';return;}
+    const controls=[...e.target.elements];controls.forEach(input=>input.disabled=true);$('password-error').textContent='';
+    try{setSession(await post('/api/change-password',data));$('account-editor').close();$('account-editor').innerHTML='';toast('密码已修改，其他设备需使用新密码重新登录。');}catch(err){$('password-error').textContent=err.message;}finally{controls.forEach(input=>input.disabled=false);}
+  };$('account-editor').showModal();
+}
 $('home').onclick=()=>home();$('trash').onclick=()=>home(true);
 $('side-add').onclick=()=>projectEditor();
 $('mobile-menu').onclick=()=>document.querySelector('.sidebar').classList.toggle('open');
@@ -244,6 +289,8 @@ async function action(name){
 document.addEventListener('click',async e=>{
   const b=e.target.closest('button');if(!b)return;
   try{
+    if(b.dataset.authMode)return authMode(b.dataset.authMode);
+    if(b.dataset.togglePassword){const input=$(b.dataset.togglePassword),show=input.type==='password';input.type=show?'text':'password';b.textContent=show?'隐藏':'显示';b.setAttribute('aria-label',show?'隐藏密码':'显示密码');return;}
     if(b.dataset.project)return await openProject(b.dataset.project);
     if(b.dataset.task)return openTask(b.dataset.task);
     if(b.dataset.view){state.view=b.dataset.view;state.archived=false;return renderProject();}
@@ -252,11 +299,12 @@ document.addEventListener('click',async e=>{
     if(b.dataset.restoreProject)return await archiveProject(b.dataset.restoreProject);
     if(b.dataset.restoreTask)return await archiveTask(b.dataset.restoreTask);
     if(b.dataset.historyRestore)return await restoreVersion(Number(b.dataset.historyRestore));
-    if(b.dataset.close){$(b.dataset.close).close();if(b.dataset.close==='editor')taskDirty=false;else projectDirty=false;}
+    if(b.dataset.close){$(b.dataset.close).close();if(b.dataset.close==='editor')taskDirty=false;else if(b.dataset.close==='project-editor')projectDirty=false;else if(b.dataset.close==='account-editor')$('account-editor').innerHTML='';}
   }catch(err){toast(err.message);}
 });
 for(const id of ['editor','project-editor'])$(id).addEventListener('cancel',()=>{if(id==='editor')taskDirty=false;else projectDirty=false;});
-window.addEventListener('beforeunload',e=>{if(taskDirty||projectDirty){e.preventDefault();e.returnValue='';}});
+$('account-editor').addEventListener('close',()=>{$('account-editor').querySelectorAll('input').forEach(input=>input.value='');});
+window.addEventListener('beforeunload',e=>{if(taskDirty||projectDirty||recoveryPending){e.preventDefault();e.returnValue='';}});
 window.addEventListener('offline',()=>{$('connection').textContent='连接中断 · 请保留草稿';toast('网络已断开。填写会保留本机草稿，恢复连接后请重新保存到数据库。');});
 window.addEventListener('online',()=>{$('connection').innerHTML='<i class="small-dot"></i> 已连接';toast('网络已恢复，请重新保存尚未提交的填写。');});
 boot();

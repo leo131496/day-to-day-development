@@ -31,6 +31,43 @@ def now():
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec='milliseconds')
 
 
+def hash_password(password):
+    salt = secrets.token_hex(16)
+    return salt + ':' + hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 600000).hex()
+
+
+def password_matches(password, stored):
+    salt, expected = stored.split(':')
+    digest = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 600000).hex()
+    return hmac.compare_digest(expected, digest)
+
+
+def validate_password(value):
+    if not isinstance(value, str) or not 12 <= len(value) <= 128 or not value.strip():
+        raise APIError(400, '密码需要 12 至 128 个字符，不能全为空格')
+    return value
+
+
+def validate_username(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{3,31}', value.strip()):
+        raise APIError(400, '账号需要 4 至 32 位，以字母或数字开头，可包含字母、数字、点、横线和下划线')
+    return value.strip().lower()
+
+
+def new_recovery_code():
+    raw = secrets.token_hex(16).upper()
+    return 'RC-' + '-'.join(raw[i:i+4] for i in range(0, len(raw), 4))
+
+
+def hash_recovery_code(code):
+    normalized = re.sub(r'[\s-]', '', code).upper()
+    return hashlib.sha256(normalized.encode()).hexdigest()
+
+
+def public_user(row):
+    return {'id': row['id'], 'username': row['username'], 'displayName': row['display_name'], 'role': row['role']}
+
+
 class APIError(Exception):
     def __init__(self, status, message, **extra):
         self.status, self.message, self.extra = status, message, extra
@@ -141,6 +178,12 @@ class Store:
         self.backup_dir = self.directory / 'backups'
         self.backup_dir.mkdir(exist_ok=True, mode=0o700)
         self.backup_lock = threading.Lock()
+        # Preserve a complete pre-migration database before changing legacy authentication.
+        if self.path.exists() and self.path.stat().st_size:
+            with self.connect() as existing:
+                needs_migration = not existing.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
+            if needs_migration:
+                self.backup()
         with self.connect() as db:
             db.execute('PRAGMA journal_mode=WAL')
             db.executescript('''
@@ -155,6 +198,11 @@ class Store:
                     archived INTEGER NOT NULL, action TEXT NOT NULL, created_at TEXT NOT NULL,
                     UNIQUE(project_id,task_id, version));
                 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, csrf TEXT NOT NULL, expires REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE,
+                    display_name TEXT NOT NULL, password_hash TEXT NOT NULL, recovery_hash TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'member', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS auth_attempts(scope TEXT NOT NULL, subject TEXT NOT NULL, at REAL NOT NULL);
+                CREATE INDEX IF NOT EXISTS auth_attempts_lookup ON auth_attempts(scope,subject,at);
             ''')
             db.execute('BEGIN IMMEDIATE')
             if not db.execute("SELECT 1 FROM meta WHERE key='initialized'").fetchone():
@@ -168,18 +216,34 @@ class Store:
                 for task in seed['tasks']:
                     self.write(db, 'haikang', validate_task(task), 0, '导入原始项目计划')
                 db.execute("INSERT INTO meta VALUES ('initialized', '1')")
-            if not db.execute("SELECT 1 FROM meta WHERE key='password'").fetchone():
+            if not db.execute('SELECT 1 FROM users LIMIT 1').fetchone() and not db.execute("SELECT 1 FROM meta WHERE key='password'").fetchone():
                 password = os.environ.get('BOARD_PASSWORD') or secrets.token_urlsafe(15)
                 if len(password) < 12:
                     raise RuntimeError('BOARD_PASSWORD 至少需要 12 个字符')
-                salt = secrets.token_hex(16)
-                digest = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 600000).hex()
-                db.execute('INSERT INTO meta VALUES (?, ?)', ('password', salt + ':' + digest))
+                db.execute('INSERT INTO meta VALUES (?, ?)', ('password', hash_password(password)))
                 if not os.environ.get('BOARD_PASSWORD'):
                     credential = self.directory / '首次登录密码.txt'
-                    credential.write_text('海康 × 致趣项目空间\n登录密码：' + password + '\n请妥善保管，此文件不要上传 GitHub。\n')
+                    credential.write_text('序 · 项目工作台\n登录账号：admin\n初始登录密码：' + password + '\n此文件仅记录初始密码，修改后以新密码为准。请妥善保管，不要上传 GitHub。\n')
                     credential.chmod(0o600)
                     print('首次登录密码已保存至：' + str(credential), flush=True)
+            if not db.execute('SELECT 1 FROM users LIMIT 1').fetchone():
+                legacy = db.execute("SELECT value FROM meta WHERE key='password'").fetchone()[0]
+                recovery = new_recovery_code()
+                db.execute('INSERT INTO users VALUES(?,?,?,?,?,?,?,?)',
+                           ('admin', 'admin', '项目管理员', legacy, hash_recovery_code(recovery), 'admin', now(), now()))
+                credential = self.directory / '管理员账号与恢复码.txt'
+                credential.write_text('登录账号：admin\n初始密码：沿用原空间密码（如为自动生成，见首次登录密码.txt）\n'
+                                      '初始密码恢复码：' + recovery + '\n恢复码使用一次后自动更换，请妥善保存新码。\n此文件不要上传 GitHub。\n')
+                credential.chmod(0o600)
+                print('管理员账号说明和初始恢复码已保存至：' + str(credential), flush=True)
+            if 'user_id' not in [r['name'] for r in db.execute('PRAGMA table_info(sessions)')]:
+                db.execute('DELETE FROM sessions')
+                db.execute('ALTER TABLE sessions ADD COLUMN user_id TEXT REFERENCES users(id)')
+            if 'owner_id' not in [r['name'] for r in db.execute('PRAGMA table_info(projects)')]:
+                db.execute('ALTER TABLE projects ADD COLUMN owner_id TEXT REFERENCES users(id)')
+                db.execute("UPDATE projects SET owner_id='admin' WHERE owner_id IS NULL")
+            db.execute("DELETE FROM meta WHERE key='password'")
+            db.execute("INSERT OR REPLACE INTO meta VALUES('auth_schema', '2')")
         self.path.chmod(0o600)
         self.backup()
 
@@ -276,7 +340,7 @@ class Handler(BaseHTTPRequestHandler):
         except (KeyError, cookies.CookieError):
             raise APIError(401, '请先登录项目空间')
         with self.store.connect() as db:
-            row = db.execute('SELECT * FROM sessions WHERE token=? AND expires>?',
+            row = db.execute('SELECT s.*, u.id, u.username, u.display_name, u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND s.expires>?',
                              (hashlib.sha256(token.encode()).hexdigest(), time.time())).fetchone()
         if not row:
             raise APIError(401, '登录已过期，请重新登录；未保存的草稿会保留')
@@ -318,21 +382,25 @@ class Handler(BaseHTTPRequestHandler):
                 db.execute('SELECT 1').fetchone()
             return self.respond(200, {'ok': True})
         if not path.startswith('/api/'):
-            files = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/favicon.svg': 'favicon.svg'}
+            files = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/auth.css': 'auth.css', '/favicon.svg': 'favicon.svg'}
             if method != 'GET' or path not in files:
                 raise APIError(404, '页面不存在')
             file = ROOT / 'static' / files[path]
             return self.respond(200, file.read_bytes(), content_type=(mimetypes.guess_type(file)[0] or 'text/plain') + '; charset=utf-8')
         if method != 'GET':
             self.check_origin()
-        if path == '/api/login' and method == 'POST':
-            self.login(self.body())
+        if path in ['/api/login', '/api/register', '/api/reset-password'] and method == 'POST':
+            body = self.body()
+            {'/api/login': self.login, '/api/register': self.register,
+             '/api/reset-password': self.reset_password}[path](body)
             return
         session = self.session()
         if method != 'GET' and not hmac.compare_digest(self.headers.get('X-CSRF-Token', ''), session['csrf']):
             raise APIError(403, '登录校验已失效，请刷新页面后重试')
         if path == '/api/session' and method == 'GET':
-            return self.respond(200, {'csrf': session['csrf']})
+            return self.respond(200, {'csrf': session['csrf'], 'user': public_user(session)})
+        if path == '/api/change-password' and method == 'POST':
+            return self.change_password(session, self.body())
         if path == '/api/logout' and method == 'POST':
             with self.store.connect() as db:
                 db.execute('DELETE FROM sessions WHERE token=?', (session['token'],))
@@ -343,7 +411,7 @@ class Handler(BaseHTTPRequestHandler):
             with self.store.connect() as db:
                 db.execute('BEGIN')
                 projects = []
-                for r in db.execute('SELECT * FROM projects ORDER BY updated_at DESC'):
+                for r in db.execute('SELECT * FROM projects WHERE owner_id=? ORDER BY updated_at DESC', (session['user_id'],)):
                     task_rows = db.execute('SELECT data FROM tasks WHERE project_id=? AND archived=0', (r['id'],)).fetchall()
                     tasks = [json.loads(t['data']) for t in task_rows]
                     projects.append({**json.loads(r['data']), 'id': r['id'], 'version': r['version'],
@@ -362,8 +430,8 @@ class Handler(BaseHTTPRequestHandler):
             project_id = uuid.uuid4().hex[:16]
             with self.store.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
-                db.execute('INSERT INTO projects VALUES(?,?,?,?,?)',
-                           (project_id, json.dumps(project, ensure_ascii=False), 1, 0, now()))
+                db.execute('INSERT INTO projects(id,data,version,archived,updated_at,owner_id) VALUES(?,?,?,?,?,?)',
+                           (project_id, json.dumps(project, ensure_ascii=False), 1, 0, now(), session['user_id']))
                 for task in tasks:
                     self.store.write(db, project_id, task, 0, '根据项目内容生成')
             return self.respond(201, {'project': {**project, 'id': project_id, 'version': 1, 'archived': False}})
@@ -374,7 +442,7 @@ class Handler(BaseHTTPRequestHandler):
         with self.store.connect() as db:
             if method != 'GET':
                 db.execute('BEGIN IMMEDIATE')
-            project_row = db.execute('SELECT * FROM projects WHERE id=?', (project_id,)).fetchone()
+            project_row = db.execute('SELECT * FROM projects WHERE id=? AND owner_id=?', (project_id, session['user_id'])).fetchone()
             if not project_row:
                 raise APIError(404, '项目不存在')
             if (not suffix and method == 'PUT') or (suffix == '/archive' and method == 'POST'):
@@ -450,28 +518,106 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, {'task': result})
         raise APIError(404, '接口不存在')
 
-    def login(self, body):
-        ip = self.client_address[0]
-        with self.server.login_lock:
-            recent = [stamp for stamp in self.server.login_attempts.get(ip, []) if stamp > time.time() - 300]
-            if len(recent) >= 10:
-                raise APIError(429, '尝试次数过多，请 5 分钟后重试')
-            recent.append(time.time())
-            self.server.login_attempts[ip] = recent
-        password = body.get('password', '')
-        if not isinstance(password, str) or len(password) > 1000:
-            raise APIError(400, '密码格式无效')
+    def rate_limit(self, scope, subject, limit=30, window=300):
         with self.store.connect() as db:
-            salt, expected = db.execute("SELECT value FROM meta WHERE key='password'").fetchone()[0].split(':')
-            digest = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 600000).hex()
-            if not hmac.compare_digest(expected, digest):
-                raise APIError(401, '密码不正确')
-            token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-            db.execute('DELETE FROM sessions WHERE expires<?', (time.time(),))
-            db.execute('INSERT INTO sessions VALUES(?,?,?)',
-                       (hashlib.sha256(token.encode()).hexdigest(), csrf, time.time() + 86400 * 7))
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('DELETE FROM auth_attempts WHERE at<?', (time.time() - 3600,))
+            count = db.execute('SELECT COUNT(*) FROM auth_attempts WHERE scope=? AND subject=? AND at>?',
+                               (scope, subject, time.time() - window)).fetchone()[0]
+            if count >= limit:
+                raise APIError(429, '尝试次数过多，请稍后再试')
+            db.execute('INSERT INTO auth_attempts VALUES(?,?,?)', (scope, subject, time.time()))
+
+    def issue_session(self, db, user_id):
+        token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+        db.execute('DELETE FROM sessions WHERE expires<?', (time.time(),))
+        db.execute('INSERT INTO sessions(token,csrf,expires,user_id) VALUES(?,?,?,?)',
+                   (hashlib.sha256(token.encode()).hexdigest(), csrf, time.time() + 86400 * 7, user_id))
+        return token, csrf
+
+    def session_cookie(self, token):
         secure = '; Secure' if os.environ.get('BOARD_COOKIE_SECURE') == '1' else ''
-        self.respond(200, {'csrf': csrf}, {'Set-Cookie': 'board_session=' + token + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800' + secure})
+        return 'board_session=' + token + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800' + secure
+
+    def login(self, body):
+        self.rate_limit('login', self.client_address[0])
+        username = validate_username(body.get('username'))
+        password = body.get('password')
+        if not isinstance(password, str) or len(password) > 128:
+            raise APIError(400, '请填写账号和密码')
+        with self.store.connect() as db:
+            user = db.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
+            # Missing accounts perform the same password work as existing accounts.
+            dummy = '0' * 32 + ':' + '0' * 64
+            verified = password_matches(password, user['password_hash'] if user else dummy)
+            if not user or not verified:
+                raise APIError(401, '账号或密码不正确')
+            # Serialize with password changes so an old password cannot create a session after reset.
+            db.execute('BEGIN IMMEDIATE')
+            current = db.execute('SELECT * FROM users WHERE id=?', (user['id'],)).fetchone()
+            if current['password_hash'] != user['password_hash']:
+                raise APIError(401, '账号或密码已更新，请重新登录')
+            token, csrf = self.issue_session(db, user['id'])
+        self.respond(200, {'csrf': csrf, 'user': public_user(user)}, {'Set-Cookie': self.session_cookie(token)})
+
+    def register(self, body):
+        self.rate_limit('register', self.client_address[0], limit=20, window=3600)
+        username = validate_username(body.get('username'))
+        password = validate_password(body.get('password'))
+        display_name = body.get('displayName', username)
+        if not isinstance(display_name, str) or not 1 <= len(display_name.strip()) <= 40:
+            raise APIError(400, '姓名或昵称需要 1 至 40 个字符')
+        password_hash = hash_password(password)
+        recovery = new_recovery_code()
+        user_id = uuid.uuid4().hex
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if db.execute('SELECT 1 FROM users WHERE username=?', (username,)).fetchone():
+                raise APIError(409, '这个账号已被使用，请换一个账号')
+            db.execute('INSERT INTO users VALUES(?,?,?,?,?,?,?,?)',
+                       (user_id, username, display_name.strip(), password_hash, hash_recovery_code(recovery), 'member', now(), now()))
+            user = db.execute('SELECT * FROM users WHERE id=?', (user_id,)).fetchone()
+        self.respond(201, {'user': public_user(user), 'recoveryCode': recovery})
+
+    def reset_password(self, body):
+        self.rate_limit('reset', self.client_address[0], limit=10)
+        username = validate_username(body.get('username'))
+        password = validate_password(body.get('newPassword'))
+        code = body.get('recoveryCode')
+        if not isinstance(code, str) or not 10 <= len(code) <= 100:
+            raise APIError(400, '账号或密码恢复码不正确')
+        code_hash, password_hash = hash_recovery_code(code), hash_password(password)
+        new_code = new_recovery_code()
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            user = db.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
+            if not user or not hmac.compare_digest(user['recovery_hash'], code_hash):
+                raise APIError(400, '账号或密码恢复码不正确')
+            if password_matches(password, user['password_hash']):
+                raise APIError(400, '新密码不能与当前密码相同')
+            db.execute('UPDATE users SET password_hash=?, recovery_hash=?, updated_at=? WHERE id=?',
+                       (password_hash, hash_recovery_code(new_code), now(), user['id']))
+            db.execute('DELETE FROM sessions WHERE user_id=?', (user['id'],))
+        self.respond(200, {'ok': True, 'username': username, 'recoveryCode': new_code})
+
+    def change_password(self, session, body):
+        self.rate_limit('change', session['user_id'], limit=10)
+        password = validate_password(body.get('newPassword'))
+        old_password = body.get('currentPassword')
+        if not isinstance(old_password, str) or len(old_password) > 128:
+            raise APIError(400, '请输入当前密码')
+        password_hash = hash_password(password)
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            user = db.execute('SELECT * FROM users WHERE id=?', (session['user_id'],)).fetchone()
+            if not password_matches(old_password, user['password_hash']):
+                raise APIError(400, '当前密码不正确')
+            if password_matches(password, user['password_hash']):
+                raise APIError(400, '新密码不能与当前密码相同')
+            db.execute('UPDATE users SET password_hash=?, updated_at=? WHERE id=?', (password_hash, now(), user['id']))
+            db.execute('DELETE FROM sessions WHERE user_id=?', (user['id'],))
+            token, csrf = self.issue_session(db, user['id'])
+        self.respond(200, {'ok': True, 'csrf': csrf, 'user': public_user(user)}, {'Set-Cookie': self.session_cookie(token)})
 
     def import_tasks(self, project_id, body):
         values = body.get('tasks')
@@ -504,7 +650,6 @@ class Handler(BaseHTTPRequestHandler):
 def make_server(directory, host='127.0.0.1', port=8765):
     server = ThreadingHTTPServer((host, port), Handler)
     server.store = Store(directory)
-    server.login_attempts, server.login_lock = {}, threading.Lock()
     server.daemon_threads = False
     return server
 

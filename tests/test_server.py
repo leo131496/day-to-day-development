@@ -32,7 +32,7 @@ class WorkspaceTest(unittest.TestCase):
     def setUp(self):
         self.client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         self.csrf = ''
-        code, data = self.request('/api/login', 'POST', {'password': os.environ['BOARD_PASSWORD']})
+        code, data = self.request('/api/login', 'POST', {'username': 'admin', 'password': os.environ['BOARD_PASSWORD']})
         self.assertEqual(code, 200)
         self.csrf = data['csrf']
 
