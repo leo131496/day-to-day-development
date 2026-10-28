@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Small, dependency-free project workspace with transactional SQLite storage."""
 import argparse
+import base64
+import binascii
 import datetime as dt
 import hashlib
 import hmac
@@ -19,6 +21,7 @@ from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 from work_calendar import DEFAULT_CALENDARS, calendar_from_text, calculate_workload, enrich_task, project_metrics
+from work_import import ImportProblem, MAX_FILE, parse_document, read_link
 
 ROOT = Path(__file__).resolve().parent
 STATUSES = ['待确认', '未开始', '进行中', '待验收', '受阻', '已延期', '暂停', '已完成']
@@ -208,6 +211,9 @@ class Store:
                     data TEXT NOT NULL, version INTEGER NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(user_id,year));
                 CREATE TABLE IF NOT EXISTS calendar_revisions(user_id TEXT NOT NULL REFERENCES users(id), year INTEGER NOT NULL,
                     version INTEGER NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(user_id,year,version));
+                CREATE TABLE IF NOT EXISTS import_batches(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+                    user_id TEXT NOT NULL REFERENCES users(id), data TEXT NOT NULL, versions TEXT NOT NULL,
+                    created_at TEXT NOT NULL, applied_at TEXT, request_hash TEXT, result TEXT);
             ''')
             db.execute('BEGIN IMMEDIATE')
             if not db.execute("SELECT 1 FROM meta WHERE key='initialized'").fetchone():
@@ -387,6 +393,8 @@ class Handler(BaseHTTPRequestHandler):
             self.route(method, urlparse(self.path).path)
         except APIError as exc:
             self.respond(exc.status, {'error': exc.message, **exc.extra})
+        except ImportProblem as exc:
+            self.respond(400, {'error': str(exc)})
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as exc:
@@ -400,7 +408,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, {'ok': True})
         if not path.startswith('/api/'):
             files = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/auth.css': 'auth.css',
-                     '/worklist.css': 'worklist.css', '/dashboard.css': 'dashboard.css', '/dashboard.js': 'dashboard.js', '/favicon.svg': 'favicon.svg'}
+                     '/worklist.css': 'worklist.css', '/dashboard.css': 'dashboard.css', '/dashboard.js': 'dashboard.js',
+                     '/importer.js': 'importer.js', '/importer.css': 'importer.css', '/favicon.svg': 'favicon.svg'}
             if method != 'GET' or path not in files:
                 raise APIError(404, '页面不存在')
             file = ROOT / 'static' / files[path]
@@ -517,6 +526,21 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, {'ok': True, 'lastAt': self.store.last_backup})
         if path == '/api/import' and method == 'POST':
             return self.import_tasks(project_id, self.body())
+        if path == '/api/import-preview' and method == 'POST':
+            return self.import_preview(project_id, session['user_id'], self.body())
+        batch_match = re.fullmatch(r'/api/import-batches/([a-f0-9]{32})(/save)?', path)
+        if batch_match:
+            batch_id, save = batch_match.groups()
+            if save and method == 'POST':
+                return self.save_import(project_id, session['user_id'], batch_id, self.body())
+            if not save and method == 'GET':
+                with self.store.connect() as db:
+                    batch = db.execute('SELECT * FROM import_batches WHERE id=? AND project_id=? AND user_id=?',
+                                       (batch_id, project_id, session['user_id'])).fetchone()
+                if not batch:
+                    raise APIError(404, '导入预览不存在，请重新读取文件')
+                return self.respond(200, {**json.loads(batch['data']), 'batchId': batch_id,
+                                          'result': json.loads(batch['result']) if batch['result'] else None})
         if path == '/api/tasks' and method == 'POST':
             task = validate_task(self.body())
             with self.store.connect() as db:
@@ -663,6 +687,119 @@ class Handler(BaseHTTPRequestHandler):
             db.execute('DELETE FROM sessions WHERE user_id=?', (user['id'],))
             token, csrf = self.issue_session(db, user['id'])
         self.respond(200, {'ok': True, 'csrf': csrf, 'user': public_user(user)}, {'Set-Cookie': self.session_cookie(token)})
+
+    def import_preview(self, project_id, user_id, body):
+        if body.get('kind') == 'file':
+            name, encoded = body.get('name'), body.get('content')
+            if not isinstance(name, str) or not 1 <= len(name) <= 240 or not isinstance(encoded, str):
+                raise APIError(400, '请选择有效的本地文件')
+            try:
+                raw = base64.b64decode(encoded, validate=True)
+            except (ValueError, binascii.Error):
+                raise APIError(400, '文件上传内容无效')
+            if len(raw) > MAX_FILE:
+                raise APIError(413, '本地文件最大 2MB，请拆分文件后导入')
+            data = parse_document(raw, name)
+            data['source'] = Path(name).name
+        elif body.get('kind') == 'link':
+            auth = body.get('auth', {})
+            if not isinstance(auth, dict):
+                raise APIError(400, '授权信息格式无效')
+            data = read_link(body.get('url'), auth)
+        else:
+            raise APIError(400, '请选择本地文件或文档链接')
+        batch_id = uuid.uuid4().hex
+        with self.store.connect() as db:
+            versions = {row['id']: row['version'] for row in db.execute('SELECT id,version FROM tasks WHERE project_id=?', (project_id,))}
+            used = set(versions)
+            for index, row in enumerate(data['rows']):
+                task = row['task']
+                original = task.get('id', '')
+                proposed = original
+                if not re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', proposed) or proposed in used:
+                    proposed = 'IM-'+batch_id[:8]+'-'+str(index+1).zfill(4)
+                    if original:
+                        row['warnings'].append('原编号重复、已存在或格式不兼容；新增时使用新编号，原编号为「'+original+'」')
+                used.add(proposed)
+                row['originalId'], row['appendId'] = original, proposed
+                task['id'] = proposed
+                row['errors'] = []
+                try:
+                    validate_task(task)
+                except APIError as exc:
+                    row['errors'].append(exc.message)
+            data['createdAt'] = now()
+            # Only parsed work records and sanitized provenance are persisted, never source credentials.
+            db.execute('INSERT INTO import_batches(id,project_id,user_id,data,versions,created_at) VALUES(?,?,?,?,?,?)',
+                       (batch_id, project_id, user_id, json.dumps(data, ensure_ascii=False), json.dumps(versions), now()))
+        return self.respond(200, {**data, 'batchId': batch_id})
+
+    def save_import(self, project_id, user_id, batch_id, body):
+        values, mode = body.get('rows'), body.get('mode', 'append')
+        if mode not in ['append', 'merge'] or not isinstance(values, list) or not 1 <= len(values) <= 2000:
+            raise APIError(400, '请选择 1 至 2000 项工作记录以及正确的导入方式')
+        request_hash = hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        self.store.backup()
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            batch = db.execute('SELECT * FROM import_batches WHERE id=? AND project_id=? AND user_id=?',
+                               (batch_id, project_id, user_id)).fetchone()
+            if not batch:
+                raise APIError(404, '导入预览不存在，请重新读取文件')
+            if batch['applied_at']:
+                if batch['request_hash'] != request_hash:
+                    raise APIError(409, '这批记录已保存。若需再次导入，请重新读取文件')
+                return self.respond(200, json.loads(batch['result']))
+            project = db.execute('SELECT archived FROM projects WHERE id=? AND owner_id=?', (project_id, user_id)).fetchone()
+            if not project or project['archived']:
+                raise APIError(409, '项目已归档或不存在，请先恢复项目')
+            data, versions = json.loads(batch['data']), json.loads(batch['versions'])
+            if mode == 'merge' and data.get('sourceProject') and data['sourceProject'] != project_id:
+                raise APIError(400, '备份来自其他项目，只能新增导入；按编号更新请切换至原项目')
+            existing = {r['id']: r for r in db.execute('SELECT * FROM tasks WHERE project_id=?', (project_id,))}
+            tasks, seen, indices = [], set(), set()
+            added, updated = 0, 0
+            for value in values:
+                if not isinstance(value, dict) or type(value.get('index')) is not int or not 0 <= value['index'] < len(data['rows']):
+                    raise APIError(400, '预览行索引无效，请重新读取')
+                if value['index'] in indices:
+                    raise APIError(400, '重复提交预览行')
+                indices.add(value['index'])
+                raw = value.get('task')
+                if not isinstance(raw, dict):
+                    raise APIError(400, '工作项格式无效')
+                task_id = raw.get('id')
+                if not isinstance(task_id, str) or task_id in seen:
+                    raise APIError(400, '工作编号为空或重复，请在预览中修正')
+                seen.add(task_id)
+                old = existing.get(task_id)
+                if mode == 'append' and old:
+                    raise APIError(409, '编号「'+task_id+'」已存在，请修改编号或选择按相同编号更新')
+                if versions.get(task_id, 0) != (old['version'] if old else 0):
+                    raise APIError(409, '编号「'+task_id+'」在预览后已被修改，请重新读取并核对后再保存')
+                if old and old['archived']:
+                    raise APIError(409, '编号「'+task_id+'」位于回收站，请先恢复，或改用新增编号')
+                if old:
+                    source = data['rows'][value['index']]
+                    # Missing and empty spreadsheet cells never erase existing work records.
+                    fields = set(source['fields']) | {key for key in raw if raw[key] != source['task'].get(key)}
+                    merged = json.loads(old['data'])
+                    merged.update({key: val for key, val in raw.items() if key in fields and val not in ['', None]})
+                    raw = merged
+                    updated += 1
+                else:
+                    added += 1
+                try:
+                    task = validate_task(raw)
+                except APIError as exc:
+                    raise APIError(400, '第 '+str(value['index']+1)+' 项：'+exc.message)
+                tasks.append((task, old['version'] if old else 0))
+            for task, version in tasks:
+                self.store.write(db, project_id, task, version, '导入工作清单 · '+data['source'][:160])
+            result = {'ok': True, 'count': len(tasks), 'added': added, 'updated': updated, 'batchId': batch_id}
+            db.execute('UPDATE import_batches SET applied_at=?,request_hash=?,result=? WHERE id=?',
+                       (now(), request_hash, json.dumps(result), batch_id))
+        return self.respond(200, result)
 
     def import_tasks(self, project_id, body):
         values = body.get('tasks')

@@ -42,7 +42,7 @@ function showLogin(){
   clearTimeout(toast.timer);$('toast').hidden=true;
   state.load++;state.csrf='';state.user=null;state.projects=[];state.tasks=[];state.project=null;
   $('login').hidden=false;$('workspace').hidden=true;
-  for(const id of ['editor','project-editor','account-editor','calendar-editor'])if($(id).open)$(id).close();
+  for(const id of ['editor','project-editor','account-editor','calendar-editor','import-editor'])if($(id).open)$(id).close();
   taskDirty=false;projectDirty=false;calendarDirty=false;
   if(!recoveryPending)authMode('login');
 }
@@ -135,13 +135,13 @@ function renderProject(){
   const url=new URL(location.href);if(state.view==='dashboard')url.searchParams.set('view','dashboard');else url.searchParams.delete('view');window.history.replaceState(null,'',url);
   const p=state.project,tasks=activeTasks(),m=metrics(tasks),missing=tasks.filter(t=>!t.owner||!t.start||!t.end).length;
   $('breadcrumb').innerHTML='工作空间 <span>/</span> '+esc(p.name);
-  $('main').innerHTML=`<section class="page-heading"><div><div class="eyebrow">PROJECT DELIVERY · WORK REGISTER</div><h1>${esc(p.name)}</h1><p>${esc(p.description||'明确工作范围、责任分工和计划投入，持续跟踪交付进展。')}</p></div><div class="heading-actions"><button data-action="edit-project">项目信息</button><button data-action="calendar">工作日历</button><button data-action="generate">✧ 生成工作项</button><button class="primary" data-action="new-task">＋ 新增工作项</button></div></section>
+  $('main').innerHTML=`<section class="page-heading"><div><div class="eyebrow">PROJECT DELIVERY · WORK REGISTER</div><h1>${esc(p.name)}</h1><p>${esc(p.description||'明确工作范围、责任分工和计划投入，持续跟踪交付进展。')}</p></div><div class="heading-actions"><button data-action="edit-project">项目信息</button><button data-action="calendar">工作日历</button><button data-action="import-worklist">↑ 导入工作清单</button><button data-action="generate">✧ 生成工作项</button><button class="primary" data-action="new-task">＋ 新增工作项</button></div></section>
   ${state.backup?.error?'<p class="backup-warning">最近一次自动备份失败，请检查服务器存储空间。当前数据库仍可使用，请及时导出备份。</p>':''}
   <div class="stats work-stats">${stat('工作清单',tasks.length,'项',tasks.filter(done).length+' 项已完成 · '+missing+' 项待补责任或排期','▦')}${stat('计划工时',hoursText(m.hours),'H','已计算 '+m.ready+'/'+m.total+' 项 · 每工作日 8H','◷')}${stat('整体进度',hoursText(m.percent),'%',progressRule(m),'↗')}${stat('进度关注',tasks.filter(overdue).length,'项逾期',tasks.filter(near).length+' 项 7 天内到期','⚑')}</div>
   <div class="calendar-policy"><span class="calendar-policy-icon">▦</span><div><strong>中国大陆工作日历 · 8H / 工作日</strong><p>起止日期均计入；扣除周末及法定放假，计入调休补班。${m.unpriced?'有 '+m.unpriced+' 项尚不能计算工时，请补齐日期或年度日历。':'当前已排期工作项均已按日历计算。'}</p></div><button class="link" data-action="calendar">查看计算依据 ↗</button></div>
   <div class="viewbar"><button class="viewtab ${state.view==='list'?'active':''}" data-view="list">☷ 项目工作清单</button><button class="viewtab ${state.view==='dashboard'?'active':''}" data-view="dashboard">◉ 可视化看板</button><button class="viewtab ${state.view==='board'?'active':''}" data-view="board">▥ 状态看板</button><button class="viewtab ${state.view==='overview'?'active':''}" data-view="overview">◴ 进度与工时</button><span class="viewcount">${state.archived||state.tasks.filter(t=>t.archived).length?`<button class="link" data-action="toggle-archive">${state.archived?'返回工作清单':'工作项回收站'}</button>`:'责任清晰 · 过程留痕'}</span></div>
   <div class="filters"><input id="search" aria-label="搜索任务" placeholder="⌕ 搜索任务、内容或负责人…" value="${esc(state.filters.q)}"><select id="filter-stage" aria-label="筛选阶段">${options([...new Set(tasks.map(t=>t.stage))],state.filters.stage,'全部项目阶段')}</select><select id="filter-owner" aria-label="筛选负责人">${options([...new Set(tasks.map(t=>t.owner).filter(Boolean))],state.filters.owner,'全部负责人')}</select><select id="filter-focus" aria-label="筛选任务提醒">${[['all','全部任务'],['open','未完成'],['unassigned','负责人待定'],['overdue','已逾期'],['near','7 天内到期'],['blocked','受阻 / 延期']].map(([v,l])=>`<option value="${v}" ${state.filters.focus===v?'selected':''}>${l}</option>`).join('')}</select><button class="refresh" data-action="refresh-project">↻ 刷新数据</button></div>
-  <div id="view-content"></div><div class="section-head"><small id="result-count"></small><div class="section-actions"><button data-action="export">导出备份</button><button data-action="csv">导出 CSV</button><button data-action="import">导入记录</button><button data-action="backup">立即备份</button><button class="danger" data-action="delete-project">删除项目</button></div></div><input type="file" id="import-file" accept=".json,.html" hidden>`;
+  <div id="view-content"></div><div class="section-head"><small id="result-count"></small><div class="section-actions"><button data-action="export">导出备份</button><button data-action="csv">导出 CSV</button><button data-action="import">恢复 JSON 备份</button><button data-action="backup">立即备份</button><button class="danger" data-action="delete-project">删除项目</button></div></div><input type="file" id="import-file" accept=".json,.html" hidden>`;
   $('search').oninput=e=>{state.filters.q=e.target.value;renderView();};
   $('filter-focus').insertAdjacentHTML('beforebegin',`<select id="filter-status" aria-label="筛选当前状态">${options(statuses,state.filters.status,'全部状态')}</select>`);
   $('filter-focus').insertAdjacentHTML('afterend',`<select id="filter-sort" aria-label="工作清单排序">${[['wbs','按工作编号'],['end','按结束日期'],['hours','按计划工时'],['progress','按进度百分比'],['attention','按关注优先级']].map(([v,label])=>`<option value="${v}" ${state.filters.sort===v?'selected':''}>${label}</option>`).join('')}</select>`);
@@ -350,6 +350,7 @@ async function importFile(e){
 }
 async function action(name){
   switch(name){
+    case 'import-worklist':return WorkImporter.open();
     case 'calendar':return calendarEditor();
     case 'reset-dashboard-filters':state.filters=defaultFilters();return renderProject();
     case 'dashboard-list':state.view='list';return renderProject();
@@ -394,7 +395,7 @@ document.addEventListener('click',async e=>{
 for(const id of ['editor','project-editor'])$(id).addEventListener('cancel',()=>{if(id==='editor')taskDirty=false;else projectDirty=false;});
 $('account-editor').addEventListener('close',()=>{$('account-editor').querySelectorAll('input').forEach(input=>input.value='');});
 $('calendar-editor').addEventListener('cancel',()=>calendarDirty=false);
-window.addEventListener('beforeunload',e=>{if(taskDirty||projectDirty||calendarDirty||recoveryPending){e.preventDefault();e.returnValue='';}});
+window.addEventListener('beforeunload',e=>{if(taskDirty||projectDirty||calendarDirty||recoveryPending||window.WorkImporter?.dirty){e.preventDefault();e.returnValue='';}});
 window.addEventListener('offline',()=>{$('connection').textContent='连接中断 · 请保留草稿';toast('网络已断开。填写会保留本机草稿，恢复连接后请重新保存到数据库。');});
 window.addEventListener('online',()=>{$('connection').innerHTML='<i class="small-dot"></i> 已连接';toast('网络已恢复，请重新保存尚未提交的填写。');});
 boot();

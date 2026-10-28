@@ -127,6 +127,32 @@ try{
   await page.setViewportSize({width:1512,height:1000});await page.locator('[data-view="list"]').click();
   const csvPromise=page.waitForEvent('download');await page.locator('[data-action="csv"]').click();const csvFile=path.join(data,'worklist.csv');await (await csvPromise).saveAs(csvFile);const csvText=await readFile(csvFile,'utf8');assert.ok(csvText.includes('计划工时H')&&csvText.includes('有效工作日')&&csvText.includes('工时计算核对'));
   const downloadPromise=page.waitForEvent('download');await page.locator('[data-action="export"]').click();const download=await downloadPromise;await download.saveAs(path.join(root,'test-results/export.json'));
+  // Import previews never change tasks; editable drafts survive close/reload and save retries are idempotent.
+  await page.locator('[data-action="import-worklist"]').click();
+  const importCSV='编号,阶段,任务名称,工作内容,负责人,状态,开始日期,结束日期,进度\nT-001,导入阶段,导入验收,核对本地计划,王五,进行中,2026-10-01,2026-10-10,50%\nIMP-002,导入阶段,导入复核,复核交付结果,李四,未开始,2026-11-02,2026-11-03,0%\nIMP-BAD,导入阶段,日期待修正,等待补齐,张三,未开始,错误日期,,0%';
+  await page.locator('#import-source-file').setInputFiles({name:'项目计划.csv',mimeType:'text/csv',buffer:Buffer.from(importCSV)});
+  await page.locator('#import-read').click();await page.locator('#import-count').filter({hasText:'共 3 项'}).waitFor();
+  assert.equal(await page.locator('#import-save').isDisabled(),true);
+  assert.equal(await page.locator('[data-work-row]').count(),6);
+  await page.locator('[data-import-select="2"]').uncheck();
+  await page.locator('[data-import-row="0"][data-field="owner"]').fill('导入负责人');
+  assert.notEqual(await page.locator('[data-import-row="0"][data-field="id"]').inputValue(),'T-001');
+  await page.screenshot({path:path.join(root,'test-results/import-preview.png'),fullPage:true});
+  await page.locator('[data-close="import-editor"]').first().click();await page.reload();await page.locator('[data-work-row]').first().waitFor();
+  await page.locator('[data-action="import-worklist"]').click();await page.locator('#import-count').filter({hasText:'已选 2 项'}).waitFor();
+  assert.equal(await page.locator('[data-import-row="0"][data-field="owner"]').inputValue(),'导入负责人');
+  await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(root,'test-results/import-mobile.png'),fullPage:true});
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await page.setViewportSize({width:1512,height:1000});
+  await page.locator('[data-import-tab="link"]').click();await page.locator('#import-url').fill('https://127.0.0.1/private');await page.locator('#import-authorization').click();await page.locator('[data-import-auth="token"]').fill('ephemeral-test-token');
+  page.once('dialog',dialog=>dialog.accept());await page.locator('#import-read').click();await page.locator('#import-error').filter({hasText:'HTTPS'}).waitFor();
+  assert.equal(await page.locator('[data-import-auth="token"]').inputValue(),'');
+  let dropped=false;
+  await page.route('**/import-batches/*/save',async route=>{if(!dropped){dropped=true;await route.fetch();await route.abort('failed');}else await route.continue();});
+  await page.locator('#import-save').click();await page.locator('#import-error').filter({hasText:'保存失败'}).waitFor();assert.ok(await page.locator('#import-editor').isVisible());
+  await page.locator('#import-save').click();await page.locator('#import-editor').waitFor({state:'hidden'});await page.unroute('**/import-batches/*/save');
+  assert.equal(await page.locator('[data-work-row]').count(),8);assert.match(await page.locator('.viewtab.active').textContent(),/项目工作清单/);
+  const imported=page.locator('[data-work-row]').filter({hasText:'导入验收'});assert.match(await imported.textContent(),/导入负责人/);assert.match(await imported.textContent(),/24 H/);
+  await page.locator('[data-view="dashboard"]').click();assert.equal(await page.locator('[data-dashboard-kpi="total"]').textContent(),'8项');await page.locator('[data-view="list"]').click();
   // Network failure cannot clear draft or close the editor.
   await page.locator('[data-task="T-001"]').click();await page.locator('[name="decision"]').fill('断网时填写的决策');await context.setOffline(true);await page.locator('#save-task').click();await page.locator('#task-error').filter({hasText:/fetch|网络|Failed/}).waitFor();assert.equal(await page.locator('[name="decision"]').inputValue(),'断网时填写的决策');await context.setOffline(false);await page.locator('#save-task').click();await page.locator('#editor').waitFor({state:'hidden'});
   await page.setViewportSize({width:390,height:844});await page.locator('[data-view="list"]').click();await page.screenshot({path:path.join(root,'test-results/worklist-mobile.png'),fullPage:true});
@@ -165,6 +191,6 @@ try{
   await page.locator('#logout').click();await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(root,'test-results/login-mobile.png'),fullPage:true});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
   await page.locator('#auth-tabs [data-auth-mode="register"]').click();await page.screenshot({path:path.join(root,'test-results/register-mobile.png'),fullPage:true});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({passed:['automatic dashboard from saved tasks','dashboard stage and status filters','unassigned owner drilldown','chart keyboard navigation','Gantt editing and live recalculation','dashboard deletion and recovery counts','dashboard empty and zero-result states','dashboard mobile layout','dashboard navigation preserves data','default project work register','work content and responsibility columns','holiday and makeup-day hours preview','status filtering','missing-year calendar setup and recalculation','working-days and planned-hours CSV','50 seed tasks','multi-project generation','CRUD and search','process restart persistence','draft recovery','parallel conflict merge','version history','task recycle and restore','project recycle and restore','offline recovery','backup export','mobile layout','account registration','password confirmation validation','recovery-code download','user data isolation','password change and session revocation','password reset and recovery-code rotation','account persistence after restart','mobile login and registration'],consoleErrors:errors}));
+  console.log(JSON.stringify({passed:['local file preview and inline corrections','import preview draft recovery','invalid rows and selection validation','import permission error and token clearing','import save retry without duplicate records','imported work hours and dashboard recalculation','mobile import dialog','automatic dashboard from saved tasks','dashboard stage and status filters','unassigned owner drilldown','chart keyboard navigation','Gantt editing and live recalculation','dashboard deletion and recovery counts','dashboard empty and zero-result states','dashboard mobile layout','dashboard navigation preserves data','default project work register','work content and responsibility columns','holiday and makeup-day hours preview','status filtering','missing-year calendar setup and recalculation','working-days and planned-hours CSV','50 seed tasks','multi-project generation','CRUD and search','process restart persistence','draft recovery','parallel conflict merge','version history','task recycle and restore','project recycle and restore','offline recovery','backup export','mobile layout','account registration','password confirmation validation','recovery-code download','user data isolation','password change and session revocation','password reset and recovery-code rotation','account persistence after restart','mobile login and registration'],consoleErrors:errors}));
 }catch(error){console.error(error);console.error(logs.slice(-7000));process.exitCode=1;}
 finally{if(browser)await browser.close();await stop();await rm(data,{recursive:true,force:true});}
